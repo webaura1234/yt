@@ -2,7 +2,10 @@ FROM python:3.12.1-bookworm
 
 RUN apt remove imagemagick -y
 
-# Download and execute a script
+# Install ImageMagick from source via SoftCreatR/imei ("ImageMagick Easy Install",
+# https://github.com/SoftCreatR/imei), pinned to a specific signed release instead of
+# tracking the "main" bootstrap target, for reproducible builds.
+ENV RELEASE_TAG=im-7.1.2-29_aom-3.13.3_heif-1.23.1_jxl-0.12.0
 RUN t=$(mktemp) && \
     wget 'https://dist.1-2.dev/imei.sh' -qO "$t" && \
     bash "$t" && \

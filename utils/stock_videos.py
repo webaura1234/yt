@@ -1,4 +1,3 @@
-from typing import List
 
 from config import PEXELS_API_KEY
 import logging
@@ -34,7 +33,7 @@ def search_pexels(query: str) -> str:
 
     try:
         video_urls = response["videos"][0]["video_files"]
-    except:
+    except (KeyError, IndexError, TypeError):
         logger.error(f"Error getting stock videos: {response}")
         return ""
     video_url = ""

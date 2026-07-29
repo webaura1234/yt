@@ -29,7 +29,7 @@ def send_error_notification(error_message: str, exception: Exception = None, con
         apobj.add(APPRISE_URL)
         
         # Build notification content
-        title = f"Auto YT Shorts Error"
+        title = "Auto YT Shorts Error"
         if context:
             title += f" - {context}"
             
@@ -77,7 +77,7 @@ def send_success_notification(message: str, context: str = ""):
         apobj.add(APPRISE_URL)
         
         # Build notification content
-        title = f"Auto YT Shorts Success"
+        title = "Auto YT Shorts Success"
         if context:
             title += f" - {context}"
         

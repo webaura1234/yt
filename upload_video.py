@@ -2,7 +2,6 @@
 
 import os
 import random
-import sys
 import time
 
 import httplib2
@@ -137,12 +136,15 @@ def resumable_upload(insert_request):
                 else:
                     exit("The upload failed with an unexpected response: %s" % response)
         except HttpError as e:
+            if e.resp.status not in RETRIABLE_STATUS_CODES:
+                exit(
+                    "A non-retriable HTTP error %d occurred:\n%s"
+                    % (e.resp.status, e.content)
+                )
             error = "A retriable HTTP error %d occurred:\n%s" % (
                 e.resp.status,
                 e.content,
             )
-        except HttpError as e:
-            error = "A retriable error occurred: %s" % e
 
         if error is not None:
             print(error)

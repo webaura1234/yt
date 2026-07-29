@@ -7,7 +7,6 @@ from typing import List, Optional, Tuple
 
 import assemblyai as aai
 import requests
-import srt_equalizer
 from moviepy.audio.fx.all import volumex
 from moviepy.editor import (
     AudioFileClip,
@@ -19,7 +18,6 @@ from moviepy.editor import (
     concatenate_videoclips,
 )
 from moviepy.video.fx.all import crop
-from moviepy.video.tools.subtitles import SubtitlesClip
 
 from config import (
     ASSEMBLY_AI_API_KEY,
@@ -73,33 +71,6 @@ def generate_word_timestamps(audio_path: Path) -> List[dict]:
             })
     
     return words
-
-
-def generate_subtitles(audio_path: Path) -> Path:
-    """Legacy function for backward compatibility"""
-    def equalize_subtitles(srt_path: str, max_chars: int = 10) -> None:
-        srt_equalizer.equalize_srt_file(srt_path, srt_path, max_chars)
-
-    aai.settings.api_key = ASSEMBLY_AI_API_KEY
-
-    subtitles_id = uuid.uuid4()
-
-    transcriber = aai.Transcriber()
-
-    transcript = transcriber.transcribe(str(audio_path))
-
-    # Save subtitles
-    subtitles_path = TEMP_PATH / f"{subtitles_id}.srt"
-
-    subtitles = transcript.export_subtitles_srt()
-
-    with open(subtitles_path, "w") as f:
-        f.write(subtitles)
-
-    # Equalize subtitles
-    equalize_subtitles(subtitles_path)
-
-    return subtitles_path
 
 
 def combine_videos(video_paths: List[Path], max_duration: int) -> Path:
@@ -163,7 +134,7 @@ def create_karaoke_subtitles(words: List[dict], video_duration: float) -> List[T
     return subtitle_clips
 
 
-def generate_video_with_karaoke(
+def generate_video(
     video_paths: List[Path], tts_path: Path, search_terms: Optional[List[str]] = None
 ) -> Tuple[Path, List[str]]:
     """Generate video with karaoke-style word-by-word subtitles.
@@ -224,79 +195,6 @@ def generate_video_with_karaoke(
     credits = [c for c in (music_credit, video_credit) if c]
 
     return output_video_path, credits
-
-
-def generate_video(
-    video_paths: List[Path],
-    tts_path: Path,
-    search_terms: Optional[List[str]] = None,
-    subtitles_path: Path = None,
-) -> Tuple[Path, List[str]]:
-    """Legacy function - now uses karaoke subtitles by default"""
-    # Use new karaoke approach
-    return generate_video_with_karaoke(video_paths, tts_path, search_terms)
-
-
-def generate_video_legacy(
-    video_paths: List[Path], tts_path: Path, subtitles_path: Path
-) -> Path:
-    """Original implementation kept for fallback"""
-    audio = AudioFileClip(str(tts_path))
-
-    combined_video_path = combine_videos(video_paths, audio.duration)
-
-    generator = lambda txt: TextClip(
-        txt,
-        font=f"fonts/bold_font.ttf",
-        fontsize=112,
-        color="#FFFFFF",
-        stroke_color="black",
-        stroke_width=5,
-    )
-
-    # Burn the subtitles into the video
-    subtitles = SubtitlesClip(str(subtitles_path), generator)
-    result = CompositeVideoClip(
-        [
-            VideoFileClip(str(combined_video_path)),
-            subtitles.set_pos(("center", "center")),
-        ]
-    )
-
-    # Add the audio
-    audio = AudioFileClip(str(tts_path))
-    music_path, _ = get_random_background_song()
-    music = AudioFileClip(str(music_path))
-
-    music = music.set_duration(audio.duration)
-
-    audio = CompositeAudioClip([audio, volumex(music, 0.07)])
-
-    result = result.set_audio(audio)
-
-    secondary_clip, _ = get_secondary_video_clip(result.duration)
-
-    secondary_video = secondary_clip.resize(
-        (result.w, int(secondary_clip.h / secondary_clip.w * result.w))
-    )
-
-    secondary_video_position = ("center", result.h - secondary_video.h - 160)
-
-    result = CompositeVideoClip(
-        [result, secondary_video.set_pos(secondary_video_position)]
-    )
-
-    video_id = uuid.uuid4()
-
-    output_video_path = OUTPUT_PATH / f"{video_id}.mp4"
-
-    result.write_videofile(
-        str(output_video_path),
-        threads=os.cpu_count(),
-        temp_audiofile=str(TEMP_PATH / f"{video_id}.mp3"),
-    )
-
-    return output_video_path
 
 
 def save_video(video_url: str) -> Path:
