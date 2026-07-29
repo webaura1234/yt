@@ -108,6 +108,14 @@ export const api = {
   },
 
   media: {
-    outputUrl: (path: string) => `${API_BASE_URL}/media/output/${path}`,
+    // job.video_path is stored like "output/2026-07-30/My Title.mp4" (relative to the
+    // repo root), but the static mount serves it *as* the output directory - strip the
+    // leading "output/" and percent-encode each segment (titles routinely contain
+    // spaces, colons, apostrophes - e.g. "Stop what you're doing: ...").
+    outputUrl: (videoPath: string) => {
+      const relative = videoPath.replace(/^output\//, "");
+      const encoded = relative.split("/").map(encodeURIComponent).join("/");
+      return `${API_BASE_URL}/media/output/${encoded}`;
+    },
   },
 };

@@ -5,6 +5,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api/client";
 import type { JobResponse } from "@/lib/api/types";
 
+type ScriptFields = Partial<
+  Pick<JobResponse, "title" | "script" | "description" | "search_terms">
+>;
+
 export function useJobs() {
   return useQuery({
     queryKey: ["jobs"],
@@ -48,6 +52,51 @@ export function useCancelJob() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.jobs.cancel(id),
+    onSuccess: (job: JobResponse) => {
+      queryClient.setQueryData(["jobs", job.id], job);
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
+}
+
+export function useUpdateScript() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, fields }: { id: string; fields: ScriptFields }) =>
+      api.jobs.updateScript(id, fields),
+    onSuccess: (job: JobResponse) => {
+      queryClient.setQueryData(["jobs", job.id], job);
+    },
+  });
+}
+
+export function useSelectVoice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, voice }: { id: string; voice: string }) =>
+      api.jobs.selectVoice(id, voice),
+    onSuccess: (job: JobResponse) => {
+      queryClient.setQueryData(["jobs", job.id], job);
+    },
+  });
+}
+
+export function useContinueJob() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, voice }: { id: string; voice?: string }) =>
+      api.jobs.continue(id, voice),
+    onSuccess: (job: JobResponse) => {
+      queryClient.setQueryData(["jobs", job.id], job);
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
+}
+
+export function usePublishJob() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.jobs.publish(id),
     onSuccess: (job: JobResponse) => {
       queryClient.setQueryData(["jobs", job.id], job);
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
