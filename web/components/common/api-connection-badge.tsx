@@ -1,17 +1,12 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { CircleAlert, CircleCheck, Loader2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { api } from "@/lib/api/client";
+import { useHealth } from "@/lib/hooks/use-system";
 
 export function ApiConnectionBadge() {
-  const { data, isPending, isError } = useQuery({
-    queryKey: ["health"],
-    queryFn: api.health,
-    refetchInterval: 15_000,
-  });
+  const { data, isPending, isError } = useHealth();
 
   if (isPending) {
     return (
