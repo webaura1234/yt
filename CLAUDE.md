@@ -52,19 +52,20 @@ This is an automated YouTube Shorts/TikTok video generation system that creates 
 
 ### Core Pipeline (main.py:55-121)
 1. **Topic Generation** - Selects from predefined controversial topics
-2. **Content Creation** - Generates titles, scripts, and descriptions using OpenAI
+2. **Content Creation** - Generates titles, scripts, and descriptions using Gemini (default) with optional OpenAI fallback
 3. **Media Assembly** - Combines stock footage, voiceover, and subtitles
 4. **Upload & Storage** - Automatically uploads to platforms and saves metadata
 
 ### Key Modules
 
-**utils/llm.py** - OpenAI integration for content generation
+**utils/llm.py** - Text generation for titles/scripts/descriptions/search terms
+- `_generate()` - Provider abstraction: tries Gemini first, falls back to OpenAI only if configured and Gemini fails
 - `get_topic()` - Random topic selection from `POSSIBLE_TOPICS`
 - `get_titles()`, `get_script()` - AI-generated content
 - `get_most_engaging_titles()` - Content ranking and selection
 
 **utils/video.py** - Video processing and assembly
-- `generate_subtitles()` - AssemblyAI transcription with SRT equalization
+- `generate_word_timestamps()` - AssemblyAI transcription for karaoke-style subtitles
 - `combine_videos()` - Concatenates stock footage to match audio duration
 - `generate_video()` - Final composition with subtitles, audio, and secondary content
 
@@ -81,8 +82,9 @@ This is an automated YouTube Shorts/TikTok video generation system that creates 
 
 ### Environment Variables
 Key configurations in `.env`:
-- `OPENAI_API_KEY_AUTO_YT_SHORTS` - OpenAI API access
-- `GEMINI_API_KEY` - Google Gemini TTS
+- `GEMINI_API_KEY` - **Required.** Default provider for text generation and TTS
+- `GEMINI_TEXT_MODEL` - Text-generation model (default: `gemini-flash-latest`)
+- `OPENAI_API_KEY_AUTO_YT_SHORTS` - Optional fallback text-generation provider
 - `PEXELS_API_KEY` - Stock video sourcing
 - `ASSEMBLY_AI_API_KEY` - Subtitle generation
 - `CRON_SCHEDULE` - Automated execution timing

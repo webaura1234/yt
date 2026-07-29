@@ -25,17 +25,21 @@ POSSIBLE_TOPICS = [
 ]
 
 
+# OpenAI is an optional fallback text-generation provider, only used when Gemini
+# (the default) fails or isn't configured. No key required to run the pipeline.
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY_AUTO_YT_SHORTS")
-
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY_AUTO_YT_SHORTS not set")
-
 
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1")
 
 GEMINI_TTS_MODEL = os.environ.get("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+
+# Default text-generation model for scripts/titles/descriptions/search terms.
+# "gemini-flash-latest" is a Google-maintained alias that always points at the
+# current recommended Flash model, avoiding a hardcoded version that later gets
+# retired for new accounts.
+GEMINI_TEXT_MODEL = os.environ.get("GEMINI_TEXT_MODEL", "gemini-flash-latest")
 
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
 
@@ -63,6 +67,8 @@ VIDEO_COUNT = int(os.environ.get("VIDEO_COUNT", "1"))
 
 APPRISE_URL = os.environ.get("APPRISE_URL")
 
+# Required: Gemini is the default provider for both text generation (scripts,
+# titles, descriptions) and TTS voiceover.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:

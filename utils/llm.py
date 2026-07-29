@@ -1,13 +1,15 @@
 import json
 import logging
 import random
-from typing import List
+import time
+from typing import List, Optional
 
 import requests
 from openai import OpenAI
 
 from config import (
-    NEWS_API_KEY,
+    GEMINI_API_KEY,
+    GEMINI_TEXT_MODEL,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
     OPENAI_MODEL,
@@ -16,19 +18,96 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client with optional base URL
-client_kwargs = {"api_key": OPENAI_API_KEY}
-if OPENAI_BASE_URL:
-    logger.info(f"Using OpenAI base URL: {OPENAI_BASE_URL}")
-    client_kwargs["base_url"] = OPENAI_BASE_URL
-
-client = OpenAI(**client_kwargs)
+# OpenAI is optional: only initialized (and only ever called) as a fallback when
+# Gemini - the default provider - fails or isn't configured.
+_openai_client: Optional[OpenAI] = None
+if OPENAI_API_KEY:
+    client_kwargs = {"api_key": OPENAI_API_KEY}
+    if OPENAI_BASE_URL:
+        logger.info(f"Using OpenAI base URL: {OPENAI_BASE_URL}")
+        client_kwargs["base_url"] = OPENAI_BASE_URL
+    _openai_client = OpenAI(**client_kwargs)
 
 _base_prompt = """
-You are a passionate Tiktok creator and you want to create more short form content. Your videos contain a voiceover, stock footage and subtitles. 
+You are a passionate Tiktok creator and you want to create more short form content. Your videos contain a voiceover, stock footage and subtitles.
 The content of the video is one informative, interesting or mind-blowing fact about the topic which people will find interesting.
 Your videos are not too complex, they should bring the message across in a simple and engaging way.
 """
+
+
+def _call_gemini(prompt: str, user_content: Optional[str], json_mode: bool, retries: int = 2) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_TEXT_MODEL}:generateContent"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
+
+    generation_config = {"temperature": 0.8}
+    if json_mode:
+        generation_config["responseMimeType"] = "application/json"
+
+    payload = {"generationConfig": generation_config}
+    if user_content is not None:
+        payload["systemInstruction"] = {"parts": [{"text": prompt}]}
+        payload["contents"] = [{"role": "user", "parts": [{"text": user_content}]}]
+    else:
+        payload["contents"] = [{"role": "user", "parts": [{"text": prompt}]}]
+
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            response.raise_for_status()
+            data = response.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Gemini text generation attempt {attempt}/{retries} failed: {e}")
+            if attempt < retries:
+                time.sleep(1.5 * attempt)
+
+    raise Exception(f"Gemini text generation failed after {retries} attempts: {last_error}")
+
+
+def _call_openai(prompt: str, user_content: Optional[str], json_mode: bool) -> str:
+    if _openai_client is None:
+        raise Exception("OpenAI fallback unavailable: OPENAI_API_KEY_AUTO_YT_SHORTS not set")
+
+    if user_content is not None:
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_content},
+        ]
+    else:
+        messages = [{"role": "user", "content": prompt}]
+
+    kwargs = {"response_format": {"type": "json_object" if json_mode else "text"}}
+
+    response = (
+        _openai_client.chat.completions.create(
+            messages=messages,
+            model=OPENAI_MODEL,
+            **kwargs,
+        )
+        .choices[0]
+        .message.content
+    )
+    return response
+
+
+def _generate(prompt: str, user_content: Optional[str] = None, json_mode: bool = False) -> str:
+    """Gemini is the default text-generation provider. OpenAI is used only as a
+    fallback, and only when it's configured (OPENAI_API_KEY_AUTO_YT_SHORTS set)."""
+    if GEMINI_API_KEY:
+        try:
+            return _call_gemini(prompt, user_content, json_mode)
+        except Exception as e:
+            if _openai_client is None:
+                raise
+            logger.warning(f"Gemini generation failed, falling back to OpenAI: {e}")
+            return _call_openai(prompt, user_content, json_mode)
+
+    if _openai_client is not None:
+        return _call_openai(prompt, user_content, json_mode)
+
+    raise Exception("No LLM provider configured: set GEMINI_API_KEY or OPENAI_API_KEY_AUTO_YT_SHORTS")
 
 
 def get_topic() -> str:
@@ -70,71 +149,9 @@ Respond with JSON in the following format:
     """
     )
 
-    response = (
-        client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": _prompt},
-                {"role": "user", "content": topic},
-            ],
-            response_format={"type": "json_object"},
-            model=OPENAI_MODEL,
-        )
-        .choices[0]
-        .message.content
-    )
+    response = _generate(_prompt, topic, json_mode=True)
 
     return json.loads(response)["titles"]
-
-    ...
-
-
-def get_news_topics() -> List[str]:
-    news = requests.get(
-        f"https://newsapi.org/v2/top-headlines?country=us&apiKey={NEWS_API_KEY}"
-    ).json()
-
-    return [
-        article["description"] for article in news["articles"] if article["description"]
-    ]
-
-
-def filter_by_spicyness(titles: List[str]) -> List[str]:
-    _prompt = (
-        _base_prompt
-        + """
-You will be presented with a list of possible headline for your video and a corresponding number. 
-Your goal is to make the most engaging video by using spicy news headlines that will attract the most attention.
-You are now a classification model to tell me whether the title is spicy or not.
-
-respond with JSON in the following format:
-{
-    "spicy_titles": [n, m, ...]
-}
-"""
-    )
-
-    response = (
-        client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": _prompt},
-                {
-                    "role": "user",
-                    "content": "\n".join(
-                        [f"{i+1}. {title}" for i, title in enumerate(titles)]
-                    ),
-                },
-            ],
-            response_format={"type": "json_object"},
-            model=OPENAI_MODEL,
-        )
-        .choices[0]
-        .message.content
-    )
-    return [
-        titles[i]
-        for i in json.loads(response)["spicy_titles"]
-        if i < len(titles) and titles[i]
-    ]
 
 
 def get_most_engaging_titles(titles: List[str], n: int = 1) -> List[str]:
@@ -152,22 +169,10 @@ Respond with JSON in the following format:
 """
     )
 
-    response = (
-        client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": _prompt},
-                {
-                    "role": "user",
-                    "content": "\n".join(
-                        [f"{i+1}. {title}" for i, title in enumerate(titles)]
-                    ),
-                },
-            ],
-            response_format={"type": "json_object"},
-            model=OPENAI_MODEL,
-        )
-        .choices[0]
-        .message.content
+    response = _generate(
+        _prompt,
+        "\n".join([f"{i+1}. {title}" for i, title in enumerate(titles)]),
+        json_mode=True,
     )
 
     most_engaging_titles = json.loads(response)["most_engaging_titles"]
@@ -177,44 +182,6 @@ Respond with JSON in the following format:
     ]
 
     return sorted_titles[: n if n < len(sorted_titles) else len(sorted_titles)]
-
-
-def get_best_title(titles: List[str]) -> str:
-    _prompt = (
-        _base_prompt
-        + """
-You will be presented with a list of possible title for your video and a corresponding number. 
-Respond with the best, most engaging title for your video. 
-It should have a name of a famous person, event, product or company, choose the one that is most engaging.
-
-Respond with JSON in the following format:
-{
-    "best_title_index": n
-}
-
-"""
-    )
-
-    response = (
-        client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": _prompt},
-                {
-                    "role": "user",
-                    "content": "\n".join(
-                        [f"{i+1}. {title}" for i, title in enumerate(titles)]
-                    ),
-                },
-            ],
-            response_format={"type": "json_object"},
-            model=OPENAI_MODEL,
-        )
-        .choices[0]
-        .message.content
-    )
-
-    best_title_index = json.loads(response)["best_title_index"]
-    return titles[best_title_index - 1]
 
 
 def get_description(title: str, script: str) -> str:
@@ -255,17 +222,7 @@ ONLY RETURN THE RAW DESCRIPTION. DO NOT RETURN ANYTHING ELSE.
 """
     )
 
-    response = (
-        client.chat.completions.create(
-            messages=[{"role": "user", "content": _prompt}],
-            response_format={"type": "text"},
-            model=OPENAI_MODEL,
-        )
-        .choices[0]
-        .message.content.strip()
-    )
-
-    return response
+    return _generate(_prompt).strip()
 
 
 def get_script(title: str) -> str:
@@ -303,17 +260,7 @@ ONLY RETURN THE RAW SCRIPT. DO NOT RETURN ANYTHING ELSE.
 """
     )
 
-    response = (
-        client.chat.completions.create(
-            messages=[{"role": "user", "content": _prompt}],
-            response_format={"type": "text"},
-            model=OPENAI_MODEL,
-        )
-        .choices[0]
-        .message.content.strip()
-    )
-
-    return response
+    return _generate(_prompt).strip()
 
 
 def get_search_terms(title: str, script: str) -> list:
@@ -344,14 +291,6 @@ Respond with JSON in the following format:
 """
     )
 
-    response = (
-        client.chat.completions.create(
-            messages=[{"role": "user", "content": _prompt}],
-            response_format={"type": "json_object"},
-            model=OPENAI_MODEL,
-        )
-        .choices[0]
-        .message.content
-    )
+    response = _generate(_prompt, json_mode=True)
 
     return json.loads(response)["search_terms"]
