@@ -1,13 +1,40 @@
 import base64
 import json
+import logging
 import mimetypes
 import random
 import requests
 import struct
 import uuid
+import wave
 from pathlib import Path
+from typing import Optional, Tuple
+
+from moviepy.editor import AudioFileClip
 
 from config import BACKGROUND_SONGS_PATH, GEMINI_API_KEY, GEMINI_TTS_MODEL, TEMP_PATH
+from utils.downloads import (
+    attribution_credit_line,
+    dedupe_folder,
+    delete_media_file,
+    download_file,
+    write_attribution,
+)
+
+logger = logging.getLogger(__name__)
+
+# Royalty-free (CC BY 3.0) tracks by Kevin MacLeod, incompetech.com - used only as an
+# automatic fallback when music/ has no local files. Verified working direct-download URLs.
+_FALLBACK_TRACKS = [
+    ("Monkeys Spinning Monkeys", "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Monkeys%20Spinning%20Monkeys.mp3"),
+    ("Fluffing a Duck", "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Fluffing%20a%20Duck.mp3"),
+    ("Wallpaper", "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Wallpaper.mp3"),
+    ("Local Forecast - Elevator", "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Local%20Forecast%20-%20Elevator.mp3"),
+    ("Life of Riley", "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Life%20of%20Riley.mp3"),
+    ("Carefree", "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Carefree.mp3"),
+    ("Sneaky Snitch", "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Sneaky%20Snitch.mp3"),
+    ("Wholesome", "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Wholesome.mp3"),
+]
 
 
 def save_binary_file(file_path: Path, data: bytes):
@@ -159,6 +186,128 @@ def generate_voiceover(text: str) -> Path:
     return audio_path
 
 
-def get_random_background_song() -> Path:
-    songs = list(BACKGROUND_SONGS_PATH.glob("*.mp3"))
-    return random.choice(songs)
+def _generate_placeholder_song(dest: Path, duration: float = 60.0, sample_rate: int = 44100) -> None:
+    """Last-resort local fallback (silent track) so the pipeline never crashes for lack
+    of background music, even when fully offline and no track could be downloaded."""
+    num_samples = int(duration * sample_rate)
+    with wave.open(str(dest), "w") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(sample_rate)
+        f.writeframes(b"\x00\x00" * num_samples)
+
+
+def _validate_audio_file(path: Path, min_duration: float = 3.0) -> bool:
+    """Reject corrupt/undecodable files and clips too short to be usable background music."""
+    try:
+        clip = AudioFileClip(str(path))
+        duration = clip.duration
+        clip.close()
+    except Exception as e:
+        logger.warning(f"Invalid/corrupt audio file {path.name}: {e}")
+        return False
+
+    if not duration or duration < min_duration:
+        logger.warning(f"Rejecting {path.name}: duration too short ({duration}s)")
+        return False
+
+    return True
+
+
+_FALLBACK_TRACK_URLS = dict(_FALLBACK_TRACKS)
+
+
+def _backfill_known_attribution(path: Path) -> None:
+    """Older cache entries (downloaded before attribution tracking existed) have no
+    sidecar. If the filename matches a known catalog track, write its required CC BY
+    credit now instead of silently under-attributing it."""
+    if attribution_credit_line(path) is not None:
+        return
+    url = _FALLBACK_TRACK_URLS.get(path.stem)
+    if not url:
+        return
+    write_attribution(
+        path,
+        source="incompetech",
+        license="CC BY 3.0",
+        attribution_required=True,
+        credit=(
+            f'Music: "{path.stem}" by Kevin MacLeod (incompetech.com) '
+            "— Licensed under CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/)"
+        ),
+        url=url,
+    )
+
+
+def _pick_valid_cached_song(folder: Path) -> Optional[Path]:
+    """Pick a random cached track, validating it and pruning any invalid/corrupt files found."""
+    candidates = list(folder.glob("*.mp3")) + list(folder.glob("*.wav"))
+    random.shuffle(candidates)
+
+    for path in candidates:
+        if _validate_audio_file(path):
+            _backfill_known_attribution(path)
+            return path
+        logger.warning(f"Removing invalid cached audio file {path.name}")
+        delete_media_file(path)
+
+    return None
+
+
+def _ensure_background_music() -> None:
+    BACKGROUND_SONGS_PATH.mkdir(parents=True, exist_ok=True)
+    dedupe_folder(BACKGROUND_SONGS_PATH, {".mp3", ".wav"})
+
+    if _pick_valid_cached_song(BACKGROUND_SONGS_PATH):
+        return  # reuse the local cache, no need to hit the network
+
+    logger.info("No valid background music cached locally, downloading royalty-free tracks...")
+
+    candidates = _FALLBACK_TRACKS.copy()
+    random.shuffle(candidates)
+
+    downloaded = 0
+    for name, url in candidates:
+        dest = BACKGROUND_SONGS_PATH / f"{name}.mp3"
+        if download_file(url, dest) and _validate_audio_file(dest):
+            write_attribution(
+                dest,
+                source="incompetech",
+                license="CC BY 3.0",
+                attribution_required=True,
+                credit=(
+                    f'Music: "{name}" by Kevin MacLeod (incompetech.com) '
+                    "— Licensed under CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/)"
+                ),
+                url=url,
+            )
+            downloaded += 1
+            logger.info(f"Cached background track '{name}' (CC BY 3.0, Kevin MacLeod - incompetech.com)")
+            if downloaded >= 3:
+                break
+        else:
+            delete_media_file(dest)
+
+    if downloaded == 0:
+        logger.warning(
+            "Could not download any royalty-free music (offline or source unavailable); "
+            "generating a silent placeholder track instead"
+        )
+        placeholder = BACKGROUND_SONGS_PATH / "placeholder_silence.wav"
+        _generate_placeholder_song(placeholder)
+        write_attribution(placeholder, source="generated", license="N/A", attribution_required=False)
+
+
+def get_random_background_song() -> Tuple[Path, Optional[str]]:
+    """Returns (path_to_track, credit_line_or_None). credit_line is non-None only when the
+    track's license requires attribution (e.g. Incompetech's CC BY 3.0)."""
+    _ensure_background_music()
+
+    path = _pick_valid_cached_song(BACKGROUND_SONGS_PATH)
+    if path is None:
+        # Final safety net: everything got pruned as invalid between ensure() and now.
+        path = BACKGROUND_SONGS_PATH / f"placeholder_{uuid.uuid4()}.wav"
+        _generate_placeholder_song(path)
+        write_attribution(path, source="generated", license="N/A", attribution_required=False)
+
+    return path, attribution_credit_line(path)

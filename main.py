@@ -81,8 +81,11 @@ def generate_videos(n: int = 4) -> None:
                 logging.debug(f"Stock videos: {stock_videos}")
                 logging.debug(f"Voiceover: {voiceover}")
 
-                video = generate_video(stock_videos, voiceover)
+                video, credits = generate_video(stock_videos, voiceover, search_terms)
                 logger.info("[Generated Video]")
+
+                if credits:
+                    description = description + "\n\n" + "\n".join(credits)
 
                 new_video_file = save_metadata(
                     title, description, None, script, search_terms, video
