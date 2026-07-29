@@ -5,6 +5,7 @@ from apscheduler.triggers.cron import CronTrigger
 from tqdm import tqdm
 
 from config import CRON_SCHEDULE, RUN_ONCE, VIDEO_COUNT
+from logging_setup import configure_logging
 from utils.audio import generate_voiceover
 from utils.llm import (
     get_description,
@@ -20,7 +21,7 @@ from utils.stock_videos import get_stock_videos
 from utils.video import generate_video
 from utils.yt import auto_upload
 
-logging.basicConfig(level=logging.INFO)
+configure_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

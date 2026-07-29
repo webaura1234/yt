@@ -221,3 +221,10 @@ music
 youtube
 /test.py
 credentials/
+
+# Dashboard (api/ + web/)
+logs/
+api/jobs.db
+web/node_modules/
+web/.next/
+web/.env.local

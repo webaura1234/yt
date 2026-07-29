@@ -115,11 +115,23 @@ def parse_audio_mime_type(mime_type: str) -> dict[str, int]:
     return {"bits_per_sample": bits_per_sample, "rate": rate}
 
 
-def generate_voiceover(text: str) -> Path:
+# Gemini TTS prebuilt voices available via speechConfig.voiceConfig.prebuiltVoiceConfig.
+# "Fenrir" and "Puck" have been verified with real API calls; the rest are Google's
+# documented prebuilt voice names but not individually tested here.
+AVAILABLE_VOICES = [
+    "Fenrir", "Puck", "Charon", "Kore", "Zephyr",
+    "Aoede", "Leda", "Orus", "Callirrhoe",
+]
+
+DEFAULT_VOICE = "Fenrir"
+
+
+def generate_voiceover(text: str, voice: str = DEFAULT_VOICE) -> Path:
     """Generate voiceover audio using Google Gemini TTS REST API.
 
     Args:
         text: The text to convert to speech.
+        voice: Gemini prebuilt voice name (see AVAILABLE_VOICES).
 
     Returns:
         Path to the generated audio file.
@@ -138,7 +150,7 @@ def generate_voiceover(text: str) -> Path:
             "temperature": 0.8,
             "responseModalities": ["AUDIO"],
             "speechConfig": {
-                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Fenrir"}}
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}
             },
         },
     }
