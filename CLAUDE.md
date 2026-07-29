@@ -83,7 +83,7 @@ This is an automated YouTube Shorts/TikTok video generation system that creates 
 ### Environment Variables
 Key configurations in `.env`:
 - `GEMINI_API_KEY` - **Required.** Default provider for text generation and TTS
-- `GEMINI_TEXT_MODEL` - Text-generation model (default: `gemini-flash-latest`)
+- `GEMINI_TEXT_MODEL` - Text-generation model (default: `gemini-3.1-flash-lite`)
 - `OPENAI_API_KEY_AUTO_YT_SHORTS` - Optional fallback text-generation provider
 - `PEXELS_API_KEY` - Stock video sourcing
 - `ASSEMBLY_AI_API_KEY` - Subtitle generation

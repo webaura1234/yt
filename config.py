@@ -36,10 +36,14 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1")
 GEMINI_TTS_MODEL = os.environ.get("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
 
 # Default text-generation model for scripts/titles/descriptions/search terms.
-# "gemini-flash-latest" is a Google-maintained alias that always points at the
-# current recommended Flash model, avoiding a hardcoded version that later gets
-# retired for new accounts.
-GEMINI_TEXT_MODEL = os.environ.get("GEMINI_TEXT_MODEL", "gemini-flash-latest")
+# NOTE: previously defaulted to the "gemini-flash-latest" alias to avoid a
+# hardcoded version going stale - but that alias currently resolves to a very
+# new model (gemini-3.6-flash) with a free tier of only 20 requests/day, which
+# real usage exhausts almost immediately. Pinned to gemini-3.1-flash-lite
+# instead, which has a much more usable free-tier quota (verified directly
+# against the API). Revisit this pin periodically as models change; override
+# via GEMINI_TEXT_MODEL if your account's quota differs.
+GEMINI_TEXT_MODEL = os.environ.get("GEMINI_TEXT_MODEL", "gemini-3.1-flash-lite")
 
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
 
