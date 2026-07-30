@@ -1,7 +1,10 @@
 import type {
+  DedupeResponse,
   HealthResponse,
   JobResponse,
   LogsResponse,
+  MediaCategory,
+  MediaListResponse,
   SettingsResponse,
   SettingsUpdateRequest,
   StatsResponse,
@@ -117,5 +120,17 @@ export const api = {
       const encoded = relative.split("/").map(encodeURIComponent).join("/");
       return `${API_BASE_URL}/media/output/${encoded}`;
     },
+
+    list: () => request<MediaListResponse>("/api/media"),
+    dedupe: () =>
+      request<DedupeResponse>("/api/media/dedupe", { method: "POST" }),
+    delete: (category: MediaCategory, filename: string) =>
+      request<void>(
+        `/api/media/${category}/${encodeURIComponent(filename)}`,
+        { method: "DELETE" },
+      ),
+    // MediaItem.url is already an absolute path like "/media/music/song.mp3"
+    // returned by the backend - just prefix the API origin.
+    assetUrl: (path: string) => `${API_BASE_URL}${path}`,
   },
 };

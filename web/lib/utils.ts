@@ -16,6 +16,17 @@ export function formatBytes(bytes: number): string {
   return `${exponent === 0 ? value : value.toFixed(1)} ${units[exponent]}`;
 }
 
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
 export function formatRelativeTime(iso: string): string {
   const date = new Date(iso);
   const diffMs = date.getTime() - Date.now();

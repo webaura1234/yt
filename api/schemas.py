@@ -23,8 +23,16 @@ class DiskUsage(BaseModel):
     temp_bytes: int
 
 
+class YoutubeStatus(BaseModel):
+    # "configured" = OAuth client secret is present; "authorized" = a token has
+    # been issued (i.e. `python upload_video.py` has been run once already).
+    configured: bool
+    authorized: bool
+
+
 class StatsResponse(BaseModel):
     api_keys: ApiKeyStatus
+    youtube: YoutubeStatus
     disk_usage: DiskUsage
     cron_schedule: str
     run_once: bool
@@ -120,3 +128,24 @@ class ContinueJobRequest(BaseModel):
 class VoiceOption(BaseModel):
     name: str
     verified: bool
+
+
+class MediaItem(BaseModel):
+    category: str
+    filename: str
+    size_bytes: int
+    url: str
+    license: Optional[str] = None
+    credit: Optional[str] = None
+    source_url: Optional[str] = None
+    attribution_required: bool = False
+
+
+class MediaListResponse(BaseModel):
+    music: list[MediaItem]
+    secondary_video: list[MediaItem]
+
+
+class DedupeResponse(BaseModel):
+    music_removed: int
+    secondary_video_removed: int

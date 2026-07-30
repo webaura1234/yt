@@ -20,8 +20,14 @@ export interface DiskUsage {
   temp_bytes: number;
 }
 
+export interface YoutubeStatus {
+  configured: boolean;
+  authorized: boolean;
+}
+
 export interface StatsResponse {
   api_keys: ApiKeyStatus;
+  youtube: YoutubeStatus;
   disk_usage: DiskUsage;
   cron_schedule: string;
   run_once: boolean;
@@ -125,4 +131,27 @@ export const JOB_TERMINAL_EVENTS = new Set([
 
 export interface LogLineEvent {
   line: string;
+}
+
+export type MediaCategory = "music" | "secondary_video";
+
+export interface MediaItem {
+  category: MediaCategory;
+  filename: string;
+  size_bytes: number;
+  url: string;
+  license: string | null;
+  credit: string | null;
+  source_url: string | null;
+  attribution_required: boolean;
+}
+
+export interface MediaListResponse {
+  music: MediaItem[];
+  secondary_video: MediaItem[];
+}
+
+export interface DedupeResponse {
+  music_removed: number;
+  secondary_video_removed: number;
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { Keyboard } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -15,9 +16,10 @@ import { navItems } from "@/lib/nav-items";
 interface CommandPaletteProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onOpenHelp?: () => void;
 }
 
-export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
+export function CommandPalette({ open, onOpenChange, onOpenHelp }: CommandPaletteProps) {
   const router = useRouter();
 
   const go = (href: string) => {
@@ -39,6 +41,17 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           <CommandItem onSelect={() => go("/generate")}>
             New video generation
           </CommandItem>
+          {onOpenHelp && (
+            <CommandItem
+              onSelect={() => {
+                onOpenChange(false);
+                onOpenHelp();
+              }}
+            >
+              <Keyboard />
+              Keyboard shortcuts
+            </CommandItem>
+          )}
         </CommandGroup>
         <CommandGroup heading="Pages">
           {navItems.map((item) => (

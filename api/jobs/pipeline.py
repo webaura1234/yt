@@ -94,7 +94,7 @@ async def run_render_stage(
     update_job(job_id, stage=JobStage.RENDERING)
     await progress("rendering", "Rendering final video (this can take a minute or two)...")
     video_path, credits = await asyncio.to_thread(
-        generate_video, stock_videos, voiceover_path, job["search_terms"]
+        generate_video, stock_videos, voiceover_path, job["script"], job["search_terms"]
     )
 
     description = job["description"] or ""

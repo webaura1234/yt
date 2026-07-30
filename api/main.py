@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 from api.db import init_db
-from api.routers import jobs, logs, settings, system, topics, voices
+from api.routers import jobs, logs, media, settings, system, topics, voices
 from logging_setup import configure_logging
 
 configure_logging(level=logging.INFO)
@@ -37,6 +37,7 @@ app.include_router(settings.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
 app.include_router(voices.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(media.router, prefix="/api")
 
 # Serve generated videos/media so the frontend can preview them directly.
 if config.OUTPUT_PATH.exists():

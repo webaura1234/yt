@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import utils.llm as llm
@@ -109,3 +111,91 @@ def test_call_gemini_raises_after_exhausting_retries(monkeypatch):
 
     with pytest.raises(Exception, match="Gemini text generation failed after 2 attempts"):
         llm._call_gemini("sys", "user", False, retries=2)
+
+
+def test_get_topic_uses_llm_specialization(monkeypatch):
+    monkeypatch.setattr(
+        llm, "_generate", lambda *a, **k: json.dumps({"topic": "specific angle"})
+    )
+
+    assert llm.get_topic() == "specific angle"
+
+
+def test_get_topic_falls_back_to_raw_category_on_llm_failure(monkeypatch):
+    def failing_generate(*args, **kwargs):
+        raise Exception("gemini boom")
+
+    monkeypatch.setattr(llm, "_generate", failing_generate)
+
+    from config import POSSIBLE_TOPICS
+
+    assert llm.get_topic() in POSSIBLE_TOPICS
+
+
+def test_get_most_engaging_titles_converts_1_based_indices_correctly(monkeypatch):
+    titles = ["First title", "Second title"]
+    monkeypatch.setattr(
+        llm, "_generate", lambda *a, **k: json.dumps({"most_engaging_titles": [1, 2]})
+    )
+
+    result = llm.get_most_engaging_titles(titles, n=1)
+
+    # Regression test: the prompt numbers 1-based, so index 1 must map to
+    # titles[0] ("First title"), not titles[1] ("Second title").
+    assert result == ["First title"]
+
+
+def test_get_most_engaging_titles_falls_back_when_llm_returns_out_of_range_indices(monkeypatch):
+    titles = ["Only title"]
+    monkeypatch.setattr(
+        llm, "_generate", lambda *a, **k: json.dumps({"most_engaging_titles": [0, 99]})
+    )
+
+    result = llm.get_most_engaging_titles(titles, n=1)
+
+    assert result == ["Only title"]
+
+
+def test_get_search_terms_requests_one_term_per_sentence(monkeypatch):
+    script = "This is the hook. Here is the reveal. This is the impact."
+
+    captured = {}
+
+    def fake_generate(prompt, json_mode=False):
+        captured["prompt"] = prompt
+        return json.dumps({"search_terms": ["query one", "query two", "query three"]})
+
+    monkeypatch.setattr(llm, "_generate", fake_generate)
+
+    result = llm.get_search_terms("title", script)
+
+    assert result == ["query one", "query two", "query three"]
+    assert "EXACTLY 3" in captured["prompt"]
+
+
+def test_get_search_terms_returns_empty_list_for_empty_script(monkeypatch):
+    assert llm.get_search_terms("title", "") == []
+
+
+def test_align_terms_to_sentence_count_truncates_extra_terms():
+    sentences = ["One.", "Two."]
+    terms = ["a", "b", "c", "d"]
+
+    assert llm._align_terms_to_sentence_count(terms, sentences) == ["a", "b"]
+
+
+def test_align_terms_to_sentence_count_pads_missing_terms_by_repeating_last():
+    sentences = ["One.", "Two.", "Three."]
+    terms = ["a"]
+
+    assert llm._align_terms_to_sentence_count(terms, sentences) == ["a", "a", "a"]
+
+
+def test_align_terms_to_sentence_count_derives_from_sentence_when_zero_terms():
+    sentences = ["A shocking discovery happened today.", "Nobody saw it coming."]
+
+    result = llm._align_terms_to_sentence_count([], sentences)
+
+    assert len(result) == 2
+    assert result[0] == "A shocking discovery happened today"
+    assert result[1] == "Nobody saw it coming"

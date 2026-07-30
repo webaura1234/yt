@@ -1,6 +1,7 @@
 import json
 import logging
 import random
+import re
 import time
 from typing import List, Optional
 
@@ -15,6 +16,7 @@ from config import (
     OPENAI_MODEL,
     POSSIBLE_TOPICS,
 )
+from utils.text import split_sentences
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +113,45 @@ def _generate(prompt: str, user_content: Optional[str] = None, json_mode: bool =
 
 
 def get_topic() -> str:
-    return random.choice(POSSIBLE_TOPICS)
+    """Picks a random category from POSSIBLE_TOPICS as a genre anchor, then makes
+    one Gemini call specializing it into a concrete, curiosity-driven, emotionally
+    charged Shorts topic - not just a repeat of the category name. Falls back to
+    the raw category string (the old behavior) if the call fails, so a flaky LLM
+    call never breaks a run."""
+    category = random.choice(POSSIBLE_TOPICS)
+
+    _prompt = (
+        _base_prompt
+        + f"""
+You've been given a broad content category: "{category}".
+
+Specialize this into ONE specific, concrete Shorts topic - not the category
+itself, but a single fact/angle/entity within it. Pick the angle most likely to
+make someone stop scrolling and watch to the end. Use these criteria:
+
+- CURIOSITY GAP: the topic must promise a specific payoff ("why X happened",
+  "what X actually did") that a 20-30 second video can fully deliver - avoid
+  vague, unresolvable hype with no real answer.
+- EMOTIONAL CHARGE: pick an angle that provokes surprise, disbelief, injustice,
+  or awe - not a flat, textbook fact.
+- SPECIFICITY: name a real person, event, place, product, or number where
+  possible. "A celebrity's controversial statement" is too vague; "why a famous
+  chef was banned from his own restaurant" is specific.
+
+Respond with JSON in the following format:
+{{
+    "topic": "..."
+}}
+"""
+    )
+
+    try:
+        response = _generate(_prompt, json_mode=True)
+        topic = json.loads(response)["topic"].strip()
+        return topic or category
+    except Exception as e:
+        logger.warning(f"get_topic LLM specialization failed, using raw category: {e}")
+        return category
 
 
 def get_titles(topic: str) -> List[str]:
@@ -122,6 +162,13 @@ The next message will contain the name of the topic, that you want to make a Tik
 The length of the video should be between 15 and 30 seconds.
 
 Generate highly engaging titles that will stop users from scrolling. The FIRST 3 WORDS are CRITICAL - they must immediately grab attention.
+
+A good hook creates a SPECIFIC, nameable gap between what the viewer knows and
+what they want to know, and telegraphs that the answer is coming without giving
+it away - a vague tease ("you won't believe this") is weaker than one with a
+concrete referent ("this NASA photo got a scientist fired"). Reject a candidate
+title if it's so vague it could describe five unrelated facts equally well -
+a title must be specific enough that only one script could follow it.
 
 Use these proven viral title formulas:
 - Shock/Mystery: "You won't believe...", "This will shock you...", "Scientists discovered..."
@@ -177,11 +224,21 @@ Respond with JSON in the following format:
 
     most_engaging_titles = json.loads(response)["most_engaging_titles"]
 
+    # The prompt numbers titles 1-based ("1. title"); convert to 0-based here
+    # rather than indexing the raw numbers directly. The old code did
+    # `titles[i] for i in most_engaging_titles`, which silently returned the
+    # WRONG title whenever the model (correctly, per the prompt) returned 1 for
+    # its top pick - `titles[1]` is the SECOND title, not the first.
     sorted_titles = [
-        titles[i] for i in most_engaging_titles if i < len(titles) and titles[i]
+        titles[i - 1]
+        for i in most_engaging_titles
+        if isinstance(i, int) and 1 <= i <= len(titles)
     ]
 
-    return sorted_titles[: n if n < len(sorted_titles) else len(sorted_titles)]
+    if not sorted_titles:
+        sorted_titles = titles[:n]
+
+    return sorted_titles[:n]
 
 
 def get_description(title: str, script: str) -> str:
@@ -253,6 +310,11 @@ REQUIREMENTS:
 - Create curiosity that demands immediate answers
 - End with impact that makes them want to share
 - 15-30 seconds of speaking time
+- Write in short, single-idea sentences (roughly 4-14 words each). Each
+  sentence must express exactly ONE concrete, visualizable idea - avoid joining
+  two ideas with "and"/commas into one long sentence, since each sentence will
+  be paired with its own distinct visual in editing. Prefer a period over a
+  comma between ideas.
 
 TONE: Conversational but urgent, like you're sharing an incredible secret with a friend.
 
@@ -264,33 +326,77 @@ ONLY RETURN THE RAW SCRIPT. DO NOT RETURN ANYTHING ELSE.
 
 
 def get_search_terms(title: str, script: str) -> list:
+    """Returns one Pexels search query per sentence in `script`, in narration
+    order - `len(result) == len(split_sentences(script))` is guaranteed by
+    `_align_terms_to_sentence_count`, regardless of what the LLM actually
+    returned, so callers never have to defend against a mismatched count."""
+    sentences = split_sentences(script)
+
+    if not sentences:
+        return []
+
+    numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(sentences))
+
     _prompt = (
         _base_prompt
         + f"""
 You have decided on the title for your video: "{title}".
-The Script for your video is:
-{script}
 
-You will now generate an appropriate amount search terms for the stock footage for your video.
-"""
-        + """
+The script has been split into {len(sentences)} sentences, in narration order:
+{numbered}
 
-The stock footage should be related to the content of the video and the the video.
+Generate EXACTLY {len(sentences)} Pexels stock-video search queries, one per
+sentence, IN THE SAME ORDER. Each query must describe a concrete, literally
+filmable scene that directly illustrates THAT SPECIFIC sentence's content -
+use concrete nouns and actions, not the video's abstract topic. For example,
+for the sentence "the market crashed overnight" use "stock market crash red
+numbers screen", not "economy".
 
-Make sure that the search terms are in the order that they appear in the script and that they are relevant to the content of the video.
-Also make sure the amount of search terms is appropriate for the length of the video.
+Do not repeat the same query for two consecutive sentences even if they're
+topically similar - vary the shot (wide vs. close-up, different subject,
+different action) so the footage doesn't feel repetitive.
 
 Respond with JSON in the following format:
-{
-    "search_terms": [
-        "Search Term 1",
-        ...
-        "Search Term n"
-    ]
-}
+{{
+    "search_terms": [<exactly {len(sentences)} strings, one per sentence above>]
+}}
 """
     )
 
-    response = _generate(_prompt, json_mode=True)
+    try:
+        response = _generate(_prompt, json_mode=True)
+        terms = json.loads(response)["search_terms"]
+    except Exception as e:
+        logger.warning(f"get_search_terms LLM call failed, deriving terms from sentences: {e}")
+        terms = []
 
-    return json.loads(response)["search_terms"]
+    return _align_terms_to_sentence_count(terms, sentences)
+
+
+def _align_terms_to_sentence_count(terms: list, sentences: List[str]) -> list:
+    """Defensively pads/truncates so callers can always assume
+    len(result) == len(sentences), regardless of what the LLM returned (wrong
+    count, non-string entries, or the call failing entirely)."""
+    terms = [t for t in terms if isinstance(t, str) and t.strip()]
+
+    if len(terms) > len(sentences):
+        return terms[: len(sentences)]
+
+    if not terms:
+        # Zero usable terms: derive one query per sentence from its own text
+        # rather than a generic placeholder.
+        return [_derive_query_from_sentence(s) for s in sentences]
+
+    aligned = list(terms)
+    while len(aligned) < len(sentences):
+        aligned.append(aligned[-1])
+
+    return aligned
+
+
+def _derive_query_from_sentence(sentence: str) -> str:
+    """Cheap, non-LLM fallback query: the sentence's own first ~6 significant
+    words, punctuation stripped - used only when the LLM returned zero usable
+    search terms at all."""
+    words = re.findall(r"[A-Za-z0-9']+", sentence)
+    return " ".join(words[:6]) or "abstract background"

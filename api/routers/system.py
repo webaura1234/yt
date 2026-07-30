@@ -4,7 +4,13 @@ from pathlib import Path
 from fastapi import APIRouter
 
 import config
-from api.schemas import ApiKeyStatus, DiskUsage, HealthResponse, StatsResponse
+from api.schemas import (
+    ApiKeyStatus,
+    DiskUsage,
+    HealthResponse,
+    StatsResponse,
+    YoutubeStatus,
+)
 
 router = APIRouter(tags=["system"])
 
@@ -33,6 +39,13 @@ def _videos_generated_total() -> int:
     return len(list(config.OUTPUT_PATH.glob("*/*.json")))
 
 
+def _youtube_status() -> YoutubeStatus:
+    return YoutubeStatus(
+        configured=(config.CREDENTIALS_PATH / "client_secrets.json").exists(),
+        authorized=(config.CREDENTIALS_PATH / "tokens.json").exists(),
+    )
+
+
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", uptime_seconds=time.monotonic() - _start_time)
@@ -42,6 +55,7 @@ def health() -> HealthResponse:
 def stats() -> StatsResponse:
     return StatsResponse(
         api_keys=_api_key_status(),
+        youtube=_youtube_status(),
         disk_usage=DiskUsage(
             music_bytes=_dir_size_bytes(config.BACKGROUND_SONGS_PATH),
             secondary_video_bytes=_dir_size_bytes(config.SECONDARY_CONTENT_PATH),

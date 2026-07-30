@@ -5,6 +5,7 @@ import mimetypes
 import random
 import requests
 import struct
+import time
 import uuid
 import wave
 from pathlib import Path
@@ -125,13 +126,44 @@ AVAILABLE_VOICES = [
 
 DEFAULT_VOICE = "Fenrir"
 
+# Free-tier quota errors (HTTP 429) shouldn't be retried on the same short backoff
+# used for transient 5xx errors - Google tells us exactly how long to wait via
+# error.details[].retryDelay, and that can be tens of seconds. Cap how long we're
+# willing to sleep for; beyond this it's not worth blocking the caller and we
+# should fail fast with the quota message intact instead.
+_MAX_QUOTA_RETRY_DELAY_SECONDS = 60.0
 
-def generate_voiceover(text: str, voice: str = DEFAULT_VOICE) -> Path:
+
+def _quota_retry_delay_seconds(response: requests.Response) -> Optional[float]:
+    """Extract Google's suggested retry delay (e.g. "53.45s") from a 429 response
+    body, if present. Returns None if the response doesn't carry one."""
+    try:
+        details = response.json().get("error", {}).get("details", [])
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+    for detail in details:
+        if detail.get("@type") == "type.googleapis.com/google.rpc.RetryInfo":
+            delay = detail.get("retryDelay", "")
+            try:
+                return float(delay.rstrip("s"))
+            except ValueError:
+                return None
+
+    return None
+
+
+def generate_voiceover(text: str, voice: str = DEFAULT_VOICE, retries: int = 3) -> Path:
     """Generate voiceover audio using Google Gemini TTS REST API.
 
     Args:
         text: The text to convert to speech.
         voice: Gemini prebuilt voice name (see AVAILABLE_VOICES).
+        retries: Number of attempts before giving up on transient (5xx/network)
+            failures, retried with a short backoff. A 429 quota error is handled
+            separately: retried once after Google's own suggested delay if it's
+            short enough to be worth waiting for, otherwise raised immediately
+            with the quota message intact rather than silently retried.
 
     Returns:
         Path to the generated audio file.
@@ -155,47 +187,79 @@ def generate_voiceover(text: str, voice: str = DEFAULT_VOICE) -> Path:
         },
     }
 
-    try:
-        # Make the API request
-        response = requests.post(url, headers=headers, json=payload)
-        response.raise_for_status()
+    last_error: Optional[Exception] = None
+    quota_wait_used = False
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            response.raise_for_status()
 
-        response_data = response.json()
+            response_data = response.json()
 
-        # Extract the audio data from the response
-        if (
-            "candidates" in response_data
-            and response_data["candidates"]
-            and "content" in response_data["candidates"][0]
-            and "parts" in response_data["candidates"][0]["content"]
-            and response_data["candidates"][0]["content"]["parts"]
-        ):
-            part = response_data["candidates"][0]["content"]["parts"][0]
+            # Extract the audio data from the response
+            if (
+                "candidates" in response_data
+                and response_data["candidates"]
+                and "content" in response_data["candidates"][0]
+                and "parts" in response_data["candidates"][0]["content"]
+                and response_data["candidates"][0]["content"]["parts"]
+            ):
+                part = response_data["candidates"][0]["content"]["parts"][0]
 
-            if "inlineData" in part and "data" in part["inlineData"]:
-                # Decode the base64 audio data
-                audio_data = base64.b64decode(part["inlineData"]["data"])
-                mime_type = part["inlineData"].get("mimeType", "audio/wav")
+                if "inlineData" in part and "data" in part["inlineData"]:
+                    # Decode the base64 audio data
+                    audio_data = base64.b64decode(part["inlineData"]["data"])
+                    mime_type = part["inlineData"].get("mimeType", "audio/wav")
 
-                # Convert to WAV if needed
-                file_extension = mimetypes.guess_extension(mime_type)
-                if file_extension is None or file_extension != ".wav":
-                    audio_data = convert_to_wav(audio_data, mime_type)
+                    # Convert to WAV if needed
+                    file_extension = mimetypes.guess_extension(mime_type)
+                    if file_extension is None or file_extension != ".wav":
+                        audio_data = convert_to_wav(audio_data, mime_type)
 
-                save_binary_file(audio_path, audio_data)
+                    save_binary_file(audio_path, audio_data)
+                else:
+                    raise Exception("No audio data found in API response")
             else:
-                raise Exception("No audio data found in API response")
-        else:
-            raise Exception("Invalid response structure from Gemini TTS API")
+                raise Exception("Invalid response structure from Gemini TTS API")
 
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"API request failed: {e}")
-    except json.JSONDecodeError as e:
-        raise Exception(f"Failed to parse API response: {e}")
-    except Exception as e:
-        raise Exception(f"TTS generation failed: {e}")
+            return audio_path
 
-    return audio_path
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 429:
+                quota_message = e.response.json().get("error", {}).get("message", str(e))
+                delay = _quota_retry_delay_seconds(e.response)
+                if (
+                    delay is not None
+                    and delay <= _MAX_QUOTA_RETRY_DELAY_SECONDS
+                    and not quota_wait_used
+                ):
+                    quota_wait_used = True
+                    logger.warning(
+                        f"Gemini TTS quota exceeded, waiting {delay:.1f}s (Google's "
+                        f"suggested retry delay) before one retry: {quota_message}"
+                    )
+                    time.sleep(delay)
+                    continue
+
+                # Either no usable delay, the delay is too long to block on, or
+                # we already waited once - this is a real quota cap, not a
+                # transient failure, so fail fast with the quota message intact
+                # instead of burning through the remaining generic retries.
+                raise Exception(f"Gemini TTS quota exceeded: {quota_message}") from e
+
+            last_error = Exception(f"API request failed: {e}")
+        except requests.exceptions.RequestException as e:
+            last_error = Exception(f"API request failed: {e}")
+        except json.JSONDecodeError as e:
+            last_error = Exception(f"Failed to parse API response: {e}")
+        except Exception as e:
+            last_error = Exception(f"TTS generation failed: {e}")
+
+        logger.warning(f"Gemini TTS attempt {attempt}/{retries} failed: {last_error}")
+        if attempt < retries:
+            time.sleep(1.5 * attempt)
+
+    raise last_error
 
 
 def _generate_placeholder_song(dest: Path, duration: float = 60.0, sample_rate: int = 44100) -> None:

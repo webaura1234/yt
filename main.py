@@ -82,7 +82,7 @@ def generate_videos(n: int = 4) -> None:
                 logging.debug(f"Stock videos: {stock_videos}")
                 logging.debug(f"Voiceover: {voiceover}")
 
-                video, credits = generate_video(stock_videos, voiceover, search_terms)
+                video, credits = generate_video(stock_videos, voiceover, script, search_terms)
                 logger.info("[Generated Video]")
 
                 if credits:
