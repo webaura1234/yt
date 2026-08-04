@@ -35,6 +35,21 @@ docker compose up
 python test.py
 ```
 
+### Web Dashboard
+```bash
+# Start both the FastAPI backend (:8000) and Next.js frontend (:3000)
+./run.sh
+
+# Skip dependency installation on repeat runs
+./run.sh --no-install
+
+# Override ports
+API_PORT=8100 WEB_PORT=3100 ./run.sh
+```
+The dashboard boots without API keys configured (Settings writes them to `.env`),
+so `config.GEMINI_API_KEY` must never be enforced at import time - use
+`config.require_gemini_api_key()` at the point of use instead.
+
 ### Project Structure & Configuration
 - `config.py` - Central configuration with environment variables and API keys
 - `main.py` - Entry point with scheduler and video generation orchestration

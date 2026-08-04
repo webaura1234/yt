@@ -4,7 +4,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from tqdm import tqdm
 
-from config import CRON_SCHEDULE, RUN_ONCE, VIDEO_COUNT
+from config import CRON_SCHEDULE, RUN_ONCE, VIDEO_COUNT, require_gemini_api_key
 from logging_setup import configure_logging
 from utils.audio import generate_voiceover
 from utils.llm import (
@@ -120,6 +120,10 @@ def generate_videos(n: int = 4) -> None:
 
 
 def main():
+    # The generator can't do anything without this, so fail immediately and say
+    # how to fix it rather than dying mid-pipeline on the first API call.
+    require_gemini_api_key()
+
     cron_schedule = CRON_SCHEDULE
     run_once = RUN_ONCE
     video_count = VIDEO_COUNT

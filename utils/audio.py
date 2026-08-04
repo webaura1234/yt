@@ -13,7 +13,13 @@ from typing import Optional, Tuple
 
 from moviepy.editor import AudioFileClip
 
-from config import BACKGROUND_SONGS_PATH, GEMINI_API_KEY, GEMINI_TTS_MODEL, TEMP_PATH
+from config import (
+    BACKGROUND_SONGS_PATH,
+    GEMINI_API_KEY,
+    GEMINI_API_KEY_HELP,
+    GEMINI_TTS_MODEL,
+    TEMP_PATH,
+)
 from utils.downloads import (
     attribution_credit_line,
     dedupe_folder,
@@ -168,6 +174,9 @@ def generate_voiceover(text: str, voice: str = DEFAULT_VOICE, retries: int = 3) 
     Returns:
         Path to the generated audio file.
     """
+    if not GEMINI_API_KEY:
+        raise ValueError(GEMINI_API_KEY_HELP)
+
     audio_id = uuid.uuid4()
     audio_path = TEMP_PATH / f"{audio_id}.wav"
 
