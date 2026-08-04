@@ -214,6 +214,41 @@ The YouTube channel below showcases the auto-yt-shorts project in action, a few 
 > CRON_SCHEDULE=0 */6 * * *
 > ```
 
+#### Web dashboard
+
+The repo also ships a dashboard for driving generation by hand, browsing media and
+uploads, and watching logs live: a FastAPI backend (`api/`) plus a Next.js frontend
+(`web/`). One command starts both:
+
+```console
+$ ./run.sh
+```
+
+It creates `.env` from `example.env` if you don't have one, installs any missing
+Python and npm dependencies, waits for the API to come up, then starts the frontend
+and prints the URL. Open <http://localhost:3000>. `Ctrl-C` stops both servers.
+
+> **Requires** Node.js 20+ alongside Python 3.12.
+>
+> Useful flags and overrides:
+>
+> ```console
+> $ ./run.sh --no-install          # skip dependency checks on repeat runs
+> $ API_PORT=8100 WEB_PORT=3100 ./run.sh   # if the defaults are taken
+> ```
+>
+> The dashboard starts without any API keys configured - it will show `0/5` keys and
+> you can fill them in on the **Settings** page, which writes them to `.env`. Keys are
+> only required once you actually generate a video; restart the API for them to take
+> effect.
+
+To run the two halves separately (e.g. to attach a debugger):
+
+```console
+$ python -m uvicorn api.main:app --port 8000   # terminal 1
+$ cd web && npm run dev                        # terminal 2
+```
+
 ### With Docker
 
 > Start the Docker container using the command below:

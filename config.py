@@ -5,6 +5,26 @@ import dotenv
 
 dotenv.load_dotenv()
 
+
+def _key(name: str) -> str | None:
+    """Read an API key from the environment, treating unfilled placeholders as
+    not set - any angle-bracketed value, covering both example.env's "<KEY>" and
+    .env.example's "<YOUR_GEMINI_API_KEY>" style.
+
+    Copying example.env to .env is the documented first step, so the placeholders
+    are what an unconfigured install actually has. Without this they read as real
+    keys: the dashboard reports the provider as configured and the first API call
+    fails with an opaque 400 instead of "your key is missing".
+    """
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    if not value or (value.startswith("<") and value.endswith(">")):
+        return None
+    return value
+
+
 POSSIBLE_TOPICS = [
     # "NASA Facts",
     "Controversial Events",
@@ -27,7 +47,7 @@ POSSIBLE_TOPICS = [
 
 # OpenAI is an optional fallback text-generation provider, only used when Gemini
 # (the default) fails or isn't configured. No key required to run the pipeline.
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY_AUTO_YT_SHORTS")
+OPENAI_API_KEY = _key("OPENAI_API_KEY_AUTO_YT_SHORTS")
 
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
@@ -45,11 +65,11 @@ GEMINI_TTS_MODEL = os.environ.get("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-
 # via GEMINI_TEXT_MODEL if your account's quota differs.
 GEMINI_TEXT_MODEL = os.environ.get("GEMINI_TEXT_MODEL", "gemini-3.1-flash-lite")
 
-PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
+PEXELS_API_KEY = _key("PEXELS_API_KEY")
 
-ASSEMBLY_AI_API_KEY = os.environ.get("ASSEMBLY_AI_API_KEY")
+ASSEMBLY_AI_API_KEY = _key("ASSEMBLY_AI_API_KEY")
 
-NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
+NEWS_API_KEY = _key("NEWS_API_KEY")
 
 TEMP_PATH = Path("temp")
 
@@ -73,12 +93,33 @@ VIDEO_COUNT = int(os.environ.get("VIDEO_COUNT", "1"))
 
 APPRISE_URL = os.environ.get("APPRISE_URL")
 
-# Required: Gemini is the default provider for both text generation (scripts,
-# titles, descriptions) and TTS voiceover.
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# Required to generate anything: Gemini is the default provider for both text
+# generation (scripts, titles, descriptions) and TTS voiceover.
+#
+# Deliberately NOT enforced at import time. The dashboard API imports this module,
+# and its Settings page is how you write the key into .env - raising here made that
+# a chicken-and-egg: the server you need in order to set the key refused to start
+# because the key wasn't set. Callers that actually need the key enforce it at the
+# point of use instead (see require_gemini_api_key below).
+GEMINI_API_KEY = _key("GEMINI_API_KEY")
 
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY not set")
+GEMINI_API_KEY_HELP = (
+    "GEMINI_API_KEY is not set. Copy example.env to .env and add your key "
+    "(get one at https://aistudio.google.com/apikey), or set it in the "
+    "dashboard's Settings page."
+)
+
+
+def require_gemini_api_key() -> str:
+    """Return the Gemini API key, or raise with an actionable message if unset.
+
+    Use at the start of any flow that cannot proceed without it, so the failure
+    names the fix instead of surfacing later as a confusing 400 from Google.
+    """
+    if not GEMINI_API_KEY:
+        raise ValueError(GEMINI_API_KEY_HELP)
+    return GEMINI_API_KEY
+
 
 NO_UPLOAD = os.environ.get("NO_UPLOAD", "false").lower() == "true"
 
