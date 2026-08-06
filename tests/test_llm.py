@@ -3,6 +3,8 @@ import json
 import pytest
 
 import utils.llm as llm
+from utils.characters import ART_STYLE, cast_for_topic
+from utils.safety import UnsafeContentError
 
 
 def test_generate_uses_gemini_by_default(monkeypatch):
@@ -156,25 +158,96 @@ def test_get_most_engaging_titles_falls_back_when_llm_returns_out_of_range_indic
     assert result == ["Only title"]
 
 
-def test_get_search_terms_requests_one_term_per_sentence(monkeypatch):
+def test_get_visual_prompts_requests_one_prompt_per_sentence(monkeypatch):
     script = "This is the hook. Here is the reveal. This is the impact."
 
     captured = {}
 
     def fake_generate(prompt, json_mode=False):
         captured["prompt"] = prompt
-        return json.dumps({"search_terms": ["query one", "query two", "query three"]})
+        return json.dumps({"visual_prompts": ["scene one", "scene two", "scene three"]})
 
     monkeypatch.setattr(llm, "_generate", fake_generate)
 
-    result = llm.get_search_terms("title", script)
+    result = llm.get_visual_prompts("title", script)
 
-    assert result == ["query one", "query two", "query three"]
+    assert len(result) == 3
+    assert result[0].startswith("scene one")
     assert "EXACTLY 3" in captured["prompt"]
 
 
-def test_get_search_terms_returns_empty_list_for_empty_script(monkeypatch):
-    assert llm.get_search_terms("title", "") == []
+def test_get_visual_prompts_appends_house_art_style_to_every_prompt(monkeypatch):
+    # The style must be on every frame verbatim or the artwork drifts between
+    # sentences, so it is appended in code rather than requested from the model.
+    monkeypatch.setattr(
+        llm,
+        "_generate",
+        lambda *a, **k: json.dumps({"visual_prompts": ["a", "b"]}),
+    )
+
+    result = llm.get_visual_prompts("title", "One. Two.")
+
+    assert all(ART_STYLE in prompt for prompt in result)
+
+
+def test_get_visual_prompts_tells_the_illustrator_how_the_cast_looks(monkeypatch):
+    captured = {}
+
+    def fake_generate(prompt, json_mode=False):
+        captured["prompt"] = prompt
+        return json.dumps({"visual_prompts": ["only scene"]})
+
+    monkeypatch.setattr(llm, "_generate", fake_generate)
+    llm.get_visual_prompts("title", "One sentence.", topic="Space, Planets and Stars")
+
+    cast = cast_for_topic("Space, Planets and Stars")
+    for character in cast:
+        assert character.appearance in captured["prompt"]
+
+
+def test_get_visual_prompts_returns_empty_list_for_empty_script(monkeypatch):
+    assert llm.get_visual_prompts("title", "") == []
+
+
+def test_derive_query_falls_back_to_a_scene_for_telugu_sentences():
+    # Telugu narration has no Latin words to scrape, and feeding Telugu to an
+    # English image model produces nothing usable - so the fallback must be a
+    # real describable scene, not an empty string.
+    derived = llm._derive_query_from_sentence("సూర్యుడు చాలా వేడిగా ఉంటాడు.")
+
+    assert len(derived) > 20
+    assert derived.isascii()
+
+
+def test_generate_safe_regenerates_when_the_safety_gate_rejects(monkeypatch):
+    calls = []
+
+    def fake_generate(prompt, user_content=None, json_mode=False):
+        calls.append(1)
+        # First answer smuggles in violence; the retry is clean.
+        return "the king was killed" if len(calls) == 1 else "a happy sunny day"
+
+    monkeypatch.setattr(llm, "_generate", fake_generate)
+
+    assert llm._generate_safe("prompt", where="script") == "a happy sunny day"
+    assert len(calls) == 2
+
+
+def test_generate_safe_raises_when_every_attempt_is_unsafe(monkeypatch):
+    monkeypatch.setattr(llm, "_generate", lambda *a, **k: "a scary ghost story")
+
+    with pytest.raises(UnsafeContentError):
+        llm._generate_safe("prompt", where="script", attempts=2)
+
+
+def test_get_topic_discards_an_unsafe_topic_and_uses_the_category(monkeypatch):
+    from config import POSSIBLE_TOPICS
+
+    monkeypatch.setattr(
+        llm, "_generate", lambda *a, **k: json.dumps({"topic": "why soldiers die in war"})
+    )
+
+    assert llm.get_topic() in POSSIBLE_TOPICS
 
 
 def test_align_terms_to_sentence_count_truncates_extra_terms():

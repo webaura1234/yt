@@ -2,6 +2,7 @@ import logging
 import math
 import os
 import random
+import re
 import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -21,7 +22,7 @@ from moviepy.editor import (
     concatenate_videoclips,
 )
 from moviepy.video.fx.all import crop, freeze
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, features
 
 from config import (
     ASSEMBLY_AI_API_KEY,
@@ -60,11 +61,37 @@ LOWER_THIRD_HEIGHT = CANVAS_HEIGHT // 3
 # forbids ("attempt to perform an operation not allowed by the security policy").
 # Pillow is already a dependency, needs no external binary, and renders the same
 # stroked text - so the whole ImageMagick dependency is gone.
-SUBTITLE_FONT_PATH = "fonts/bold_font.ttf"
-SUBTITLE_FONT_SIZE = 118
-SUBTITLE_COLOR = "#FFFF00"
-SUBTITLE_STROKE_COLOR = "black"
-SUBTITLE_STROKE_WIDTH = 6
+#
+# The font MUST cover Telugu. The old Latin display font has zero Telugu glyphs,
+# and the failure mode is silent: every caption renders as empty boxes or as
+# nothing at all. Telugu is also a complex script - correct conjuncts need glyph
+# shaping, which Pillow provides via libraqm (see check_subtitle_font_support).
+SUBTITLE_FONT_PATH = "fonts/telugu_bold.ttf"
+SUBTITLE_FONT_SIZE = 104
+SUBTITLE_COLOR = "#FFE81F"
+SUBTITLE_STROKE_COLOR = "#2B1B00"
+SUBTITLE_STROKE_WIDTH = 8
+
+# Each word pops in slightly oversized and settles, which reads as lively to a
+# small child and helps the eye catch the word being spoken. Kept subtle: a big
+# bounce on every word is exhausting to watch for 40 seconds.
+SUBTITLE_POP_SCALE = 1.18
+SUBTITLE_POP_DURATION = 0.12
+
+# Pillow does not fall back between fonts inside one text run, so an emoji in
+# Telugu text renders as a .notdef box rather than a picture. Scripts are told
+# not to include emoji; this strips any that slip through so a stray character
+# can never put a tofu box on screen.
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001f300-\U0001faff"
+    "\U00002600-\U000027bf"
+    "\U0001f1e6-\U0001f1ff"
+    "\U0000fe00-\U0000fe0f"
+    "\U00002b00-\U00002bff"
+    "]+",
+    flags=re.UNICODE,
+)
 
 # Generic b-roll queries used ONLY when no script-derived keywords are available
 # (e.g. the function is called standalone). Normal operation searches Pexels using
@@ -436,6 +463,107 @@ def combine_videos(
     return combined_video_path
 
 
+def combine_scene_images(
+    scene_images: List[Path], script: str, words: List[dict], audio_duration: float
+) -> Path:
+    """Build the full-screen background from per-sentence cartoon artwork.
+
+    The cartoon counterpart of combine_videos, and the default for this
+    pipeline. Each sentence holds its own drawing for exactly as long as it is
+    narrated, so the picture always matches the words - which is the whole point
+    of drawing per sentence instead of reusing stock clips.
+
+    Stills would be inert on their own, so every scene gets a slow Ken Burns
+    move from the same deterministic effect palette the footage path uses. The
+    sub-shot splitting that path does is deliberately NOT applied: cutting
+    between two crops of one drawing looks like a glitch, whereas cutting
+    between two different video clips reads as editing.
+    """
+    video_id = uuid.uuid4()
+    combined_video_path = TEMP_PATH / f"{video_id}.mp4"
+
+    sentences = split_sentences(script) or ["."]
+    times = align_sentences_to_word_times(sentences, words, audio_duration)
+
+    if not scene_images:
+        raise ValueError("combine_scene_images requires at least one scene image")
+
+    sentence_clips = []
+    for index, (start, end) in enumerate(times):
+        duration = max(end - start, 0.1)
+        # Positional pairing, with the last drawing held over if the script
+        # somehow has more sentences than frames.
+        image_path = scene_images[min(index, len(scene_images) - 1)]
+
+        shot = (
+            ImageClip(str(image_path))
+            .set_duration(duration)
+            .set_fps(30)
+            .resize((CANVAS_WIDTH, CANVAS_HEIGHT))
+        )
+        sentence_clips.append(_apply_shot_effect(shot, _assign_effect(index)))
+
+    shortest_sentence_duration = min(c.duration for c in sentence_clips)
+    transition = min(VIDEO_TRANSITION_DURATION, shortest_sentence_duration / 4)
+
+    if len(sentence_clips) > 1 and transition > 0:
+        transitioned = [sentence_clips[0]] + [
+            c.crossfadein(transition) for c in sentence_clips[1:]
+        ]
+        final_clip = concatenate_videoclips(
+            transitioned, method="compose", padding=-transition
+        )
+    else:
+        final_clip = concatenate_videoclips(sentence_clips)
+
+    if final_clip.duration < audio_duration:
+        final_clip = freeze(final_clip, t="end", total_duration=audio_duration)
+
+    final_clip = final_clip.set_fps(30)
+    final_clip.write_videofile(
+        str(combined_video_path),
+        threads=os.cpu_count(),
+        temp_audiofile=str(TEMP_PATH / f"{video_id}.mp3"),
+    )
+
+    return combined_video_path
+
+
+def check_subtitle_font_support(sample: str = "పిల్లలు") -> None:
+    """Fail loudly at startup if Telugu subtitles cannot render.
+
+    Both failure modes here are silent at render time - a font with no Telugu
+    glyphs produces blank or boxed captions, and missing shaping support
+    produces conjuncts broken into disconnected pieces - and both only become
+    visible once you watch the finished video. Checking up front turns a wasted
+    render into an actionable error.
+    """
+    if not features.check("raqm"):
+        raise RuntimeError(
+            "Pillow was built without libraqm, so Telugu text cannot be shaped "
+            "correctly (conjuncts will break apart). Install libraqm and "
+            "reinstall Pillow: apt-get install libraqm0 && pip install --force-reinstall pillow"
+        )
+
+    font = ImageFont.truetype(SUBTITLE_FONT_PATH, 48)
+    left, top, right, bottom = font.getbbox(sample)
+    if right - left <= 0 or bottom - top <= 0:
+        raise RuntimeError(
+            f"{SUBTITLE_FONT_PATH} has no glyphs for Telugu text ({sample!r} "
+            "rendered to an empty box). Subtitles would be invisible."
+        )
+
+
+def strip_unrenderable(text: str) -> str:
+    """Remove emoji from subtitle text.
+
+    Pillow has no automatic font fallback within a text run, so an emoji sitting
+    in Telugu text renders as a .notdef box. Dropping it is strictly better than
+    showing the box.
+    """
+    return _EMOJI_PATTERN.sub("", text).strip()
+
+
 def render_text_image(
     text: str,
     font_path: str = SUBTITLE_FONT_PATH,
@@ -479,21 +607,59 @@ def render_text_image(
     return np.array(image)
 
 
+def _pop_in(clip: ImageClip, duration: float, scale: float) -> ImageClip:
+    """Scale a word clip from `scale` down to 1.0 over its first `duration`.
+
+    A word that simply appears is easy for a young child's eye to miss; a word
+    that lands with a small bounce draws attention to exactly the syllable being
+    spoken. The scale is resolved per frame rather than baked into the raster so
+    the settle stays smooth.
+    """
+    if duration <= 0 or scale <= 1.0:
+        return clip
+
+    def scale_at(t: float) -> float:
+        if t >= duration:
+            return 1.0
+        # Ease out: most of the shrink happens immediately, then it settles.
+        progress = t / duration
+        return scale - (scale - 1.0) * (progress * (2 - progress))
+
+    return clip.resize(scale_at)
+
+
 def create_karaoke_subtitles(words: List[dict], video_duration: float) -> List[ImageClip]:
-    """Create karaoke-style word-by-word subtitle clips with highlighting, positioned
-    in the lower third (not screen-center) so they read like captions over a
-    full-screen background rather than sitting in the middle of the footage."""
+    """Word-by-word Telugu captions in the lower third, each popping in as it is
+    spoken.
+
+    Positioned as captions over the artwork rather than at screen centre, and
+    animated per word so a child's eye tracks the word currently being said -
+    which is most of the point of karaoke captions for an audience that is still
+    learning to read.
+    """
     subtitle_clips = []
 
     for word_idx, word in enumerate(words):
+        text = strip_unrenderable(word.get("text", ""))
+        if not text:
+            # An emoji-only or empty token has nothing to draw. Skipping it is
+            # correct: rendering it would put a blank clip on the timeline.
+            continue
+
         # Find when the next word starts (or video ends)
         next_word_start = words[word_idx + 1]['start'] if word_idx + 1 < len(words) else video_duration
 
-        # Create highlighted word clip that disappears when next word starts
+        start = word['start']
+        end = min(next_word_start, word['end'] + 0.3)
+
         highlighted_clip = (
-            ImageClip(render_text_image(word['text']))
-            .set_start(word['start'])
-            .set_end(min(next_word_start, word['end'] + 0.3))
+            _pop_in(
+                ImageClip(render_text_image(text)),
+                min(SUBTITLE_POP_DURATION, max(end - start, 0) / 2),
+                SUBTITLE_POP_SCALE,
+            )
+            .set_start(start)
+            .set_end(end)
             .set_pos(("center", 0.74), relative=True)
         )
 
@@ -518,28 +684,42 @@ def create_lower_third_backdrop(duration: float, max_opacity: float = 0.65) -> I
 
 
 def generate_video(
-    scene_candidates: List[List[Path]],
+    scene_images: List[Path],
     tts_path: Path,
     script: str,
     search_terms: Optional[List[str]] = None,
 ) -> Tuple[Path, List[str]]:
-    """Generate video with karaoke-style word-by-word subtitles.
+    """Generate the finished video with karaoke-style Telugu subtitles.
 
-    `scene_candidates` is one candidate-clip-pool per sentence in `script`
-    (see utils.scenes.fetch_scene_candidates / utils.stock_videos.get_stock_videos).
+    `scene_images` is one cartoon illustration per sentence in `script`, in
+    narration order (see utils.cartoon.generate_scene_images).
+
+    Also accepts the older shape - one candidate-clip-pool per sentence, as
+    produced by utils.stock_videos.get_stock_videos - and renders it through the
+    stock-footage path. That path is no longer used by this pipeline, but the
+    dashboard can still replay historical jobs whose stored inputs have that
+    shape, and silently mis-rendering them would be worse than keeping the
+    branch.
 
     Returns (output_path, credits) - credits is a list of attribution lines that must
     accompany the video per the licenses of any assets that require it (e.g. CC BY
     background music); empty when nothing used requires attribution.
     """
+    check_subtitle_font_support()
+
     audio = AudioFileClip(str(tts_path))
 
-    # Word-level timestamps are needed by combine_videos (to time each sentence's
-    # shots against the actual narration), so this now runs before it - still
-    # exactly one AssemblyAI call per video, just resequenced.
+    # Word-level timestamps time each sentence's visual against the actual
+    # narration, so this runs before the background is built - still exactly one
+    # transcription call per video.
     words = generate_word_timestamps(tts_path)
 
-    combined_video_path = combine_videos(scene_candidates, script, words, audio.duration)
+    if scene_images and isinstance(scene_images[0], (list, tuple)):
+        combined_video_path = combine_videos(scene_images, script, words, audio.duration)
+    else:
+        combined_video_path = combine_scene_images(
+            list(scene_images), script, words, audio.duration
+        )
 
     # Create karaoke subtitle clips
     subtitle_clips = create_karaoke_subtitles(words, audio.duration)

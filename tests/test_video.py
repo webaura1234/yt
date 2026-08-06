@@ -18,10 +18,13 @@ from utils.video import (
     _pick_valid_cached_video,
     _split_sentence_into_subshots,
     _validate_video_file,
+    check_subtitle_font_support,
+    combine_scene_images,
     combine_videos,
     create_karaoke_subtitles,
     create_lower_third_backdrop,
     render_text_image,
+    strip_unrenderable,
     subject_aware_crop,
 )
 
@@ -108,6 +111,53 @@ def test_create_lower_third_backdrop_is_transparent_at_top_and_darker_at_bottom(
     assert mask_frame[0, 0] == 0
     assert mask_frame[-1, 0] > mask_frame[0, 0]
     assert mask_frame[-1, 0] == pytest.approx(0.65, abs=0.05)
+
+
+def test_subtitle_font_supports_telugu_and_shaping():
+    # Both failure modes are silent at render time - a font with no Telugu
+    # glyphs gives blank captions, missing shaping breaks conjuncts apart - and
+    # only show up once you watch the finished video.
+    check_subtitle_font_support()
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["పిల్లలు", "సైన్సు", "అద్భుతం", "నక్షత్రం", "గణితం"],
+)
+def test_telugu_words_with_conjuncts_render_visible_ink(word):
+    image = render_text_image(word, font_size=72)
+
+    assert image[:, :, 3].max() == 255, f"{word} rendered to nothing"
+    # A .notdef box is narrow and uniform; real shaped Telugu is much wider.
+    assert image.shape[1] > image.shape[0], f"{word} looks like tofu boxes"
+
+
+def test_strip_unrenderable_removes_emoji_from_telugu_text():
+    # Pillow has no font fallback inside a text run, so an emoji next to Telugu
+    # renders as a .notdef box. Dropping it beats showing the box.
+    assert strip_unrenderable("పిల్లలు🎉") == "పిల్లలు"
+    assert strip_unrenderable("🎉") == ""
+
+
+def test_karaoke_skips_tokens_that_would_render_to_nothing():
+    words = [
+        {"text": "సూర్యుడు", "start": 0.0, "end": 0.5},
+        {"text": "🎉", "start": 0.5, "end": 0.6},
+        {"text": "వేడి", "start": 0.6, "end": 1.0},
+    ]
+
+    clips = create_karaoke_subtitles(words, video_duration=1.0)
+
+    assert len(clips) == 2, "emoji-only token should not become a blank clip"
+
+
+def test_karaoke_words_pop_in_and_settle_to_full_size():
+    words = [{"text": "పిల్లలు", "start": 0.0, "end": 1.0}]
+    clip = create_karaoke_subtitles(words, video_duration=1.0)[0]
+
+    # The pop is an attention cue for a child still learning to read: the word
+    # must start oversized and settle, not just appear.
+    assert clip.get_frame(0.001).shape[1] > clip.get_frame(0.9).shape[1]
 
 
 def test_render_text_image_is_rgba_with_opaque_glyphs_and_transparent_corners():
@@ -361,3 +411,51 @@ def test_combine_videos_falls_back_to_placeholder_when_scene_is_empty(tmp_path: 
         assert combined.duration > 0
     finally:
         combined.close()
+
+
+def _scene_png(dest: Path, color=(200, 120, 40)) -> Path:
+    from PIL import Image
+
+    Image.new("RGB", (896, 1600), color).save(dest)
+    return dest
+
+
+def test_combine_scene_images_fills_the_canvas_and_matches_narration_length(tmp_path):
+    script = "మొదటి వాక్యం. రెండవ వాక్యం. మూడవ వాక్యం."
+    words = [
+        {"text": f"w{i}", "start": i * 0.5, "end": i * 0.5 + 0.5} for i in range(6)
+    ]
+    images = [
+        _scene_png(tmp_path / f"s{i}.png", (40 * i, 120, 200 - 30 * i)) for i in range(3)
+    ]
+
+    out = combine_scene_images(images, script, words, audio_duration=3.0)
+    clip = VideoFileClip(str(out))
+
+    try:
+        assert clip.size == [CANVAS_WIDTH, CANVAS_HEIGHT]
+        # The visual track must never end before the narration does, or the
+        # video ends on a black tail while a child is still being spoken to.
+        assert clip.duration >= 3.0 - 0.05
+    finally:
+        clip.close()
+
+
+def test_combine_scene_images_holds_the_last_frame_when_short_on_artwork(tmp_path):
+    # More sentences than drawings must not crash or drop a sentence's slot.
+    script = "ఒకటి. రెండు. మూడు."
+    words = [{"text": f"w{i}", "start": i * 0.4, "end": i * 0.4 + 0.4} for i in range(6)]
+    images = [_scene_png(tmp_path / "only.png")]
+
+    out = combine_scene_images(images, script, words, audio_duration=2.4)
+    clip = VideoFileClip(str(out))
+
+    try:
+        assert clip.size == [CANVAS_WIDTH, CANVAS_HEIGHT]
+    finally:
+        clip.close()
+
+
+def test_combine_scene_images_rejects_an_empty_scene_list():
+    with pytest.raises(ValueError):
+        combine_scene_images([], "ఒకటి.", [{"text": "w", "start": 0, "end": 1}], 1.0)

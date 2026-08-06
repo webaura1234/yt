@@ -130,7 +130,23 @@ AVAILABLE_VOICES = [
     "Aoede", "Leda", "Orus", "Callirrhoe",
 ]
 
-DEFAULT_VOICE = "Fenrir"
+# The narration is Telugu storytelling for young children, so the default is a
+# warm rather than a dramatic voice. Fenrir - the old default - is deep and
+# intense, which suited shock-fact content and is wrong for this audience.
+DEFAULT_VOICE = "Kore"
+
+# Gemini TTS takes natural-language delivery direction in the prompt itself.
+# Without it the model reads Telugu correctly but flatly, like a newsreader,
+# which is the single biggest difference between "automated narration" and
+# something a child wants to listen to. The instruction is prefixed to the text
+# rather than baked into the script so it is never spoken aloud or captioned.
+TELUGU_KIDS_DELIVERY = (
+    "Read the following Telugu text aloud as an energetic, warm children's "
+    "storyteller performing for 5 to 12 year olds. Be playful and expressive: "
+    "vary your pace, land the jokes, sound genuinely delighted and curious, and "
+    "give the funny sound words real energy. Speak clearly and a little slowly "
+    "so a small child can follow every word. Never sound like a newsreader.\n\n"
+)
 
 # Free-tier quota errors (HTTP 429) shouldn't be retried on the same short backoff
 # used for transient 5xx errors - Google tells us exactly how long to wait via
@@ -159,12 +175,20 @@ def _quota_retry_delay_seconds(response: requests.Response) -> Optional[float]:
     return None
 
 
-def generate_voiceover(text: str, voice: str = DEFAULT_VOICE, retries: int = 3) -> Path:
+def generate_voiceover(
+    text: str,
+    voice: str = DEFAULT_VOICE,
+    retries: int = 3,
+    style: str = TELUGU_KIDS_DELIVERY,
+) -> Path:
     """Generate voiceover audio using Google Gemini TTS REST API.
 
     Args:
         text: The text to convert to speech.
         voice: Gemini prebuilt voice name (see AVAILABLE_VOICES).
+        style: Delivery direction prefixed to `text`. Steers performance, not
+            content - it is consumed by the model and never spoken. Pass "" for
+            a plain, undirected read.
         retries: Number of attempts before giving up on transient (5xx/network)
             failures, retried with a short backoff. A 429 quota error is handled
             separately: retried once after Google's own suggested delay if it's
@@ -186,7 +210,7 @@ def generate_voiceover(text: str, voice: str = DEFAULT_VOICE, retries: int = 3) 
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
     payload = {
-        "contents": [{"parts": [{"text": text}]}],
+        "contents": [{"parts": [{"text": f"{style}{text}"}]}],
         "generationConfig": {
             "temperature": 0.8,
             "responseModalities": ["AUDIO"],

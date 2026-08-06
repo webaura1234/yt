@@ -9,6 +9,8 @@ import requests
 from openai import OpenAI
 
 from config import (
+    AUDIENCE_MAX_AGE,
+    AUDIENCE_MIN_AGE,
     GEMINI_API_KEY,
     GEMINI_TEXT_MODEL,
     OPENAI_API_KEY,
@@ -16,6 +18,8 @@ from config import (
     OPENAI_MODEL,
     POSSIBLE_TOPICS,
 )
+from utils.characters import ART_STYLE, cast_for_topic, describe_appearance, describe_cast
+from utils.safety import UnsafeContentError, find_unsafe, is_safe
 from utils.text import split_sentences
 
 logger = logging.getLogger(__name__)
@@ -30,10 +34,27 @@ if OPENAI_API_KEY:
         client_kwargs["base_url"] = OPENAI_BASE_URL
     _openai_client = OpenAI(**client_kwargs)
 
-_base_prompt = """
-You are a passionate Tiktok creator and you want to create more short form content. Your videos contain a voiceover, stock footage and subtitles.
-The content of the video is one informative, interesting or mind-blowing fact about the topic which people will find interesting.
-Your videos are not too complex, they should bring the message across in a simple and engaging way.
+_base_prompt = f"""
+You are the head writer at a professional Telugu children's educational comedy
+studio. You make short cartoon videos for Telugu-speaking children aged
+{AUDIENCE_MIN_AGE}-{AUDIENCE_MAX_AGE}. Every video teaches ONE real concept and makes children laugh
+while learning it.
+
+Your absolute rules, which override every other instruction:
+- Write in natural, conversational Telugu - the Telugu a loving family actually
+  speaks at home, not textbook or news Telugu. Use simple everyday words a
+  {AUDIENCE_MIN_AGE}-year-old already knows. Never use difficult Sanskrit-heavy vocabulary.
+- The content must be 100% original, safe, gentle and joyful.
+- ABSOLUTELY FORBIDDEN: violence, death, injury, weapons, war, blood, horror,
+  ghosts, monsters, anything frightening, romance, adult themes, alcohol,
+  smoking, drugs, politics, elections, government, caste, religious conflict,
+  crime, controversy, scandal, gambling, disease or medical distress.
+  Not even as a joke, a passing mention, or a "bad example" to avoid.
+- Comedy comes from silliness, surprise, funny sounds, harmless mistakes and
+  playful teasing between friends. Never from insults, cruelty, fear, or anyone
+  being hurt or humiliated.
+- The teaching must be factually correct. A joke is never worth teaching a
+  child something false.
 """
 
 
@@ -112,31 +133,70 @@ def _generate(prompt: str, user_content: Optional[str] = None, json_mode: bool =
     raise Exception("No LLM provider configured: set GEMINI_API_KEY or OPENAI_API_KEY_AUTO_YT_SHORTS")
 
 
+def _generate_safe(
+    prompt: str,
+    user_content: Optional[str] = None,
+    json_mode: bool = False,
+    where: str = "content",
+    attempts: int = 3,
+) -> str:
+    """`_generate`, but the result must clear the kid-safety gate.
+
+    A rejected generation is regenerated from scratch rather than sanitized:
+    stripping the unsafe phrase out of a script leaves a script that was heading
+    somewhere unsuitable, and the surrounding sentences usually still lean that
+    way. Raises UnsafeContentError if every attempt is rejected, which fails the
+    video rather than shipping something borderline to a child.
+    """
+    last_matches: List[str] = []
+
+    for attempt in range(1, attempts + 1):
+        response = _generate(prompt, user_content, json_mode)
+        matches = find_unsafe(response)
+        if not matches:
+            return response
+
+        last_matches = matches
+        logger.warning(
+            "%s attempt %d/%d rejected by the kid-safety gate (matched: %s); regenerating",
+            where,
+            attempt,
+            attempts,
+            ", ".join(sorted(set(matches))),
+        )
+
+    raise UnsafeContentError(last_matches, where, "")
+
+
 def get_topic() -> str:
-    """Picks a random category from POSSIBLE_TOPICS as a genre anchor, then makes
-    one Gemini call specializing it into a concrete, curiosity-driven, emotionally
-    charged Shorts topic - not just a repeat of the category name. Falls back to
-    the raw category string (the old behavior) if the call fails, so a flaky LLM
-    call never breaks a run."""
+    """Picks a learning area from POSSIBLE_TOPICS, then makes one LLM call
+    turning it into a concrete lesson a Telugu child would actually want to
+    watch. Falls back to the raw category if the call fails, so a flaky LLM
+    never breaks a run."""
     category = random.choice(POSSIBLE_TOPICS)
 
     _prompt = (
         _base_prompt
         + f"""
-You've been given a broad content category: "{category}".
+You've been given a learning area: "{category}".
 
-Specialize this into ONE specific, concrete Shorts topic - not the category
-itself, but a single fact/angle/entity within it. Pick the angle most likely to
-make someone stop scrolling and watch to the end. Use these criteria:
+Turn it into ONE specific, concrete lesson for a single short cartoon video -
+not the whole area, but one small idea a child can fully understand in 30
+seconds. Use these criteria:
 
-- CURIOSITY GAP: the topic must promise a specific payoff ("why X happened",
-  "what X actually did") that a 20-30 second video can fully deliver - avoid
-  vague, unresolvable hype with no real answer.
-- EMOTIONAL CHARGE: pick an angle that provokes surprise, disbelief, injustice,
-  or awe - not a flat, textbook fact.
-- SPECIFICITY: name a real person, event, place, product, or number where
-  possible. "A celebrity's controversial statement" is too vague; "why a famous
-  chef was banned from his own restaurant" is specific.
+- ONE CONCEPT ONLY: "why the sky is blue" is a lesson; "the science of light"
+  is a syllabus. A child must be able to repeat what they learned in one
+  sentence afterwards.
+- CHILD'S CURIOSITY: pick the question children actually ask out loud - "why do
+  we hiccup", "where does rain go", "why do cats always land on their feet".
+- EVERYDAY ANCHOR: it should connect to something in a Telugu child's daily
+  life - the kitchen, the school, the street, festivals, animals they see.
+- COMIC POTENTIAL: the idea should have an obvious funny angle - something
+  silly to imagine, or a wrong guess that would be hilarious.
+- HAPPY AND SAFE: nothing frightening, sad, or upsetting. No danger, no harm.
+
+Write the topic in English (it is used internally for search and filing), but
+choose something that will work beautifully in Telugu.
 
 Respond with JSON in the following format:
 {{
@@ -148,7 +208,16 @@ Respond with JSON in the following format:
     try:
         response = _generate(_prompt, json_mode=True)
         topic = json.loads(response)["topic"].strip()
-        return topic or category
+        if not topic:
+            return category
+        # A topic that fails the gate is discarded rather than retried: the
+        # category it came from is always safe, so falling back costs nothing.
+        if not is_safe(topic):
+            logger.warning(
+                "get_topic produced an unsafe topic (%r); using the category instead", topic
+            )
+            return category
+        return topic
     except Exception as e:
         logger.warning(f"get_topic LLM specialization failed, using raw category: {e}")
         return category
@@ -158,32 +227,25 @@ def get_titles(topic: str) -> List[str]:
     _prompt = (
         _base_prompt
         + """
-The next message will contain the name of the topic, that you want to make a Tiktok about.
-The length of the video should be between 15 and 30 seconds.
+The next message contains the lesson for your next video.
 
-Generate highly engaging titles that will stop users from scrolling. The FIRST 3 WORDS are CRITICAL - they must immediately grab attention.
+Write 6 candidate titles IN TELUGU SCRIPT. These are YouTube Kids titles, so
+they must appeal to a curious child AND to the parent who taps play.
 
-A good hook creates a SPECIFIC, nameable gap between what the viewer knows and
-what they want to know, and telegraphs that the answer is coming without giving
-it away - a vague tease ("you won't believe this") is weaker than one with a
-concrete referent ("this NASA photo got a scientist fired"). Reject a candidate
-title if it's so vague it could describe five unrelated facts equally well -
-a title must be specific enough that only one script could follow it.
+WHAT MAKES A GOOD TITLE HERE:
+- Ask the child's own question: "సూర్యుడు ఎందుకు వేడిగా ఉంటాడు?" - a question a
+  child has actually wondered about beats any clever wordplay.
+- Promise a real answer the video delivers. Never tease something the video
+  doesn't explain.
+- Say the concept plainly, so a parent searching for it can find it.
+- Keep it SHORT - under 60 characters. It must be readable at a glance.
+- Warm and playful, never shouty. No ALL CAPS, no "SHOCKING", no fake urgency,
+  no clickbait that the video doesn't pay off. Children's content that
+  over-promises is a broken promise to a child.
+- You may include ONE cheerful emoji if it fits naturally.
 
-Use these proven viral title formulas:
-- Shock/Mystery: "You won't believe...", "This will shock you...", "Scientists discovered..."
-- Numbers/Stats: "97% of people don't know...", "In just 3 seconds...", "Only 1 in 1000..."
-- Direct Questions: "Did you know that...", "What if I told you...", "Have you ever wondered..."
-- Urgency: "Before you scroll...", "Stop what you're doing...", "This changes everything..."
-- Authority: "Experts revealed...", "[Celebrity name] uses this...", "Billionaires know this secret..."
-- Contradiction: "Everyone thinks [X] but actually...", "This looks normal, but..."
-
-REQUIREMENTS:
-- Include a famous person, brand, or well-known entity when possible
-- Focus on ONE specific shocking/interesting fact
-- Create curiosity gaps that demand answers
-- Use power words: secret, revealed, discovered, shocking, hidden, truth, exposed
-- Make the first 3 words irresistible
+Write every title in Telugu script. Do not transliterate Telugu into English
+letters.
 
 Respond with JSON in the following format:
 {
@@ -196,9 +258,10 @@ Respond with JSON in the following format:
     """
     )
 
-    response = _generate(_prompt, topic, json_mode=True)
+    response = _generate_safe(_prompt, topic, json_mode=True, where="titles")
+    titles = json.loads(response)["titles"]
 
-    return json.loads(response)["titles"]
+    return [t for t in titles if isinstance(t, str) and t.strip()]
 
 
 def get_most_engaging_titles(titles: List[str], n: int = 1) -> List[str]:
@@ -206,8 +269,10 @@ def get_most_engaging_titles(titles: List[str], n: int = 1) -> List[str]:
         _base_prompt
         + """
 You will be presented with a list of possible title for your video and a corresponding number.
-Sort the titles by the most engaging one first and respond with a list of indices.
-They should have a name of a famous person, event, product or company, choose the one that is most engaging.
+Sort the titles by the best one first and respond with a list of indices.
+The best title is the one a curious Telugu child would most want to tap, that a
+parent would be happy to see them watch, and that most clearly names the thing
+being taught. Prefer clarity and warmth over cleverness.
 
 Respond with JSON in the following format:
 {
@@ -249,29 +314,27 @@ You have decided that your video is about {title}.
 The Script for your video is:
 {script}
 
-Create a compelling caption that amplifies engagement and encourages interaction. The description should complement the video content and drive more views.
-
-DESCRIPTION STRATEGY:
-- Start with a hook that reinforces the video's intrigue
-- Include a call-to-action that encourages comments
-- Use relevant hashtags strategically
-- Create FOMO (fear of missing out)
-- Ask questions that spark debate or discussion
+Write the YouTube description. It is read by parents and teachers deciding
+whether to let a child watch, and by YouTube Kids' search - so it must be
+genuinely informative, never bait.
 
 STRUCTURE:
-1. Hook line (builds on video's shock value)
-2. Engagement question or controversial statement
-3. Call-to-action for comments/shares
-4. Strategic hashtags
+1. One or two warm Telugu sentences saying exactly what the child will learn.
+2. A line naming the characters in this video, so families recognise the show.
+3. A gentle line for parents: that this is original, safe, ad-friendly
+   educational content made for children.
+4. One friendly question inviting a comment - about the lesson, never a
+   demand to like/subscribe/share.
+5. Hashtags on the final line.
 
-EXAMPLES OF ENGAGEMENT TACTICS:
-- "Wait until you see what happens next..."
-- "This blew my mind - did you know this?"
-- "Comment 'MIND BLOWN' if this shocked you"
-- "Tag someone who needs to see this"
-- "Most people have no idea about this..."
+HASHTAGS: 8-12 of them, mixing Telugu and English, all describing the real
+subject and audience - for example #తెలుగు #పిల్లలు #విద్య #సైన్స్
+#TeluguKids #KidsLearning #EducationalCartoon. No unrelated trending tags.
 
-Keep it concise but impactful. Focus on maximizing comments and shares.
+RULES:
+- Telugu script for the prose. Hashtags may be Telugu or English.
+- No fake urgency, no "you won't believe", no engagement bait.
+- Nothing that isn't actually in the video.
 
 Do not under any circumstance reference this prompt in your response.
 
@@ -279,98 +342,139 @@ ONLY RETURN THE RAW DESCRIPTION. DO NOT RETURN ANYTHING ELSE.
 """
     )
 
-    return _generate(_prompt).strip()
+    return _generate_safe(_prompt, where="description").strip()
 
 
-def get_script(title: str) -> str:
+def get_script(title: str, topic: str = "") -> str:
+    """Write the Telugu narration for one video.
+
+    Returns plain narration text - one sentence per beat, no speaker labels and
+    no stage directions - because everything downstream (sentence splitting,
+    per-sentence artwork, word-timed subtitles) consumes exactly the words that
+    get spoken. The cast still shapes the writing: characters are named inside
+    the narration, so the story has recognisable people in it without the
+    script needing a screenplay format the renderer can't use.
+    """
+    cast = cast_for_topic(topic or title)
+    guide, sidekick = cast[0], cast[1]
+
     _prompt = (
         _base_prompt
         + f"""
-You have decided on the title for your video: "{title}".
+Write the narration for a short Telugu cartoon video titled: "{title}".
 
-Create a script that hooks viewers IMMEDIATELY. The first 3-5 words are CRITICAL - they determine if someone keeps watching or scrolls away.
+YOUR RECURRING CHARACTERS (the children already know them - use these two, by
+name, and keep them exactly in character):
+{describe_cast(cast)}
 
-SCRIPT STRUCTURE:
-1. HOOK (0-3 seconds): Start with an attention-grabbing opener that creates instant intrigue
-2. REVELATION (3-15 seconds): Deliver the shocking/interesting fact with specific details
-3. IMPACT (15-30 seconds): End with why this matters or a memorable conclusion
+THE SHAPE OF THE STORY (about 30-40 seconds spoken):
+1. HOOK - the very first sentence must make a child curious. Best openers are a
+   funny question, a silly wrong guess by {sidekick.name}, or a strange sound.
+   No greetings. No "ఈ రోజు మనం నేర్చుకుందాం". Start inside the moment.
+2. THE SILLY MISTAKE - {sidekick.name} guesses wrong in a way that makes
+   children giggle. This is the comedy engine of the video.
+3. THE REAL ANSWER - {guide.name} explains the true concept, simply and
+   correctly, using something from a child's everyday life as the comparison.
+4. THE "AHA" - one sentence where the child feels they understood it.
+5. MEMORABLE ENDING - a warm, funny last line. Use a catchphrase where it fits,
+   and end on a small happy beat children will remember and repeat.
 
-PROVEN OPENING HOOKS:
-- Shock: "This will terrify you...", "You've been lied to...", "This changes everything..."
-- Numbers: "In 3 seconds, you'll discover...", "97% of people don't know..."
-- Questions: "What if I told you...", "Did you know that right now..."
-- Contradiction: "Everyone believes [X], but actually...", "This looks innocent, but..."
-- Urgency: "Before you scroll past this...", "Stop what you're doing..."
+HOW TO WRITE THE TELUGU:
+- Natural spoken Telugu, the way an affectionate family talks at home.
+- Simple words only. If a {AUDIENCE_MIN_AGE}-year-old wouldn't know a word, choose another one.
+- Name the characters inside the narration so children follow who is doing what:
+  e.g. "{sidekick.name} నవ్వుతూ అడిగింది..." then what they said.
+- Add playful sound words - "ధడేల్!", "టప్!", "హిహిహి" - children love them.
+- Warm, energetic, smiling. Like a favourite aunt telling a joke.
 
-REQUIREMENTS:
-- NO introductions, greetings, or "welcome" phrases
-- Jump straight into the hook within the first 3 words
-- Use conversational, natural speech patterns
-- Include specific names, numbers, or details when possible
-- Create curiosity that demands immediate answers
-- End with impact that makes them want to share
-- 15-30 seconds of speaking time
-- Write in short, single-idea sentences (roughly 4-14 words each). Each
-  sentence must express exactly ONE concrete, visualizable idea - avoid joining
-  two ideas with "and"/commas into one long sentence, since each sentence will
-  be paired with its own distinct visual in editing. Prefer a period over a
-  comma between ideas.
+HARD FORMATTING RULES:
+- Write ONLY the words that are spoken aloud, in Telugu script.
+- NO speaker labels ("చిట్టి:"), NO stage directions, NO scene headings, NO
+  narrator notes, NO markdown, NO numbering, NO emoji.
+- Short, single-idea sentences. Each sentence becomes its own illustration, so
+  each must describe exactly ONE thing a picture can show. Split ideas with a
+  full stop rather than joining them with "మరియు" or a comma.
+- Between 8 and 14 sentences total.
+- The concept taught must be factually TRUE.
 
-TONE: Conversational but urgent, like you're sharing an incredible secret with a friend.
-
-ONLY RETURN THE RAW SCRIPT. DO NOT RETURN ANYTHING ELSE.
+ONLY RETURN THE RAW TELUGU NARRATION. NOTHING ELSE.
 """
     )
 
-    return _generate(_prompt).strip()
+    return _generate_safe(_prompt, where="script").strip()
 
 
-def get_search_terms(title: str, script: str) -> list:
-    """Returns one Pexels search query per sentence in `script`, in narration
-    order - `len(result) == len(split_sentences(script))` is guaranteed by
-    `_align_terms_to_sentence_count`, regardless of what the LLM actually
-    returned, so callers never have to defend against a mismatched count."""
+def get_visual_prompts(title: str, script: str, topic: str = "") -> list:
+    """One cartoon-illustration prompt per sentence, in narration order.
+
+    This replaces the old stock-footage search terms. Stock video cannot show a
+    recurring cartoon character tipping a bucket of water over their own head,
+    and a channel illustrated with unrelated clips of strangers does not look
+    like a children's studio - so every sentence gets a purpose-drawn frame
+    instead of a search query.
+
+    `len(result) == len(split_sentences(script))` is guaranteed regardless of
+    what the model returns, so callers never have to defend against a mismatch.
+    """
     sentences = split_sentences(script)
 
     if not sentences:
         return []
 
+    cast = cast_for_topic(topic or title)
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(sentences))
 
     _prompt = (
         _base_prompt
         + f"""
-You have decided on the title for your video: "{title}".
+You are art-directing the cartoon for a video titled: "{title}".
 
-The script has been split into {len(sentences)} sentences, in narration order:
+The narration has been split into {len(sentences)} sentences, in order:
 {numbered}
 
-Generate EXACTLY {len(sentences)} Pexels stock-video search queries, one per
-sentence, IN THE SAME ORDER. Each query must describe a concrete, literally
-filmable scene that directly illustrates THAT SPECIFIC sentence's content -
-use concrete nouns and actions, not the video's abstract topic. For example,
-for the sentence "the market crashed overnight" use "stock market crash red
-numbers screen", not "economy".
+THE CAST AND HOW THEY MUST LOOK (identical in every frame):
+{describe_appearance(cast)}
 
-Do not repeat the same query for two consecutive sentences even if they're
-topically similar - vary the shot (wide vs. close-up, different subject,
-different action) so the footage doesn't feel repetitive.
+Write EXACTLY {len(sentences)} image-generation prompts, one per sentence, IN
+THE SAME ORDER. Each prompt describes the single cartoon frame illustrating
+THAT sentence.
+
+RULES FOR EACH PROMPT:
+- Write the prompt IN ENGLISH (the image model reads English), even though the
+  narration is Telugu.
+- Describe one clear, concrete moment a picture can show - the actual thing
+  happening in that sentence, not the video's abstract subject.
+- If a character appears, name them AND restate their appearance from the list
+  above, so the drawing matches the surrounding frames.
+- Vary the framing between consecutive prompts - wide shot, close-up on a face,
+  overhead - so the video doesn't feel static.
+- Keep every frame bright, happy and safe. No frightening imagery, no darkness,
+  nobody hurt or sad.
+- Never ask for text, letters, numbers or speech bubbles in the image. Words are
+  added later by the renderer, and generated lettering comes out garbled.
 
 Respond with JSON in the following format:
 {{
-    "search_terms": [<exactly {len(sentences)} strings, one per sentence above>]
+    "visual_prompts": [<exactly {len(sentences)} strings, one per sentence above>]
 }}
 """
     )
 
     try:
         response = _generate(_prompt, json_mode=True)
-        terms = json.loads(response)["search_terms"]
+        prompts = json.loads(response)["visual_prompts"]
     except Exception as e:
-        logger.warning(f"get_search_terms LLM call failed, deriving terms from sentences: {e}")
-        terms = []
+        logger.warning(
+            f"get_visual_prompts LLM call failed, deriving prompts from sentences: {e}"
+        )
+        prompts = []
 
-    return _align_terms_to_sentence_count(terms, sentences)
+    prompts = _align_terms_to_sentence_count(prompts, sentences)
+
+    # The house style is appended here rather than requested inside the prompt:
+    # it must appear on every frame verbatim, and a model asked to repeat a long
+    # style string a dozen times paraphrases it and lets the look drift.
+    return [f"{p}. {ART_STYLE}" for p in prompts]
 
 
 def _align_terms_to_sentence_count(terms: list, sentences: List[str]) -> list:
@@ -395,8 +499,20 @@ def _align_terms_to_sentence_count(terms: list, sentences: List[str]) -> list:
 
 
 def _derive_query_from_sentence(sentence: str) -> str:
-    """Cheap, non-LLM fallback query: the sentence's own first ~6 significant
-    words, punctuation stripped - used only when the LLM returned zero usable
-    search terms at all."""
+    """Cheap, non-LLM fallback prompt, used only when the model returned zero
+    usable prompts at all.
+
+    The narration is Telugu, so this cannot just scrape Latin words out of the
+    sentence the way it used to - on Telugu input that regex matches nothing and
+    every frame silently collapses to the same placeholder. It also cannot feed
+    Telugu text to an English image model and expect a sensible drawing. So the
+    fallback is an honest generic children's scene: bland, but on-style, safe,
+    and different from a broken render.
+    """
     words = re.findall(r"[A-Za-z0-9']+", sentence)
-    return " ".join(words[:6]) or "abstract background"
+    if words:
+        return " ".join(words[:6])
+    return (
+        "a cheerful Telugu boy and girl sitting together outdoors on a sunny "
+        "day, looking curious and happy, simple friendly scene"
+    )

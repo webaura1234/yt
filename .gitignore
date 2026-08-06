@@ -228,3 +228,5 @@ api/jobs.db
 web/node_modules/
 web/.next/
 web/.env.local
+# Generated cartoon artwork, cached by prompt hash (utils/cartoon.py)
+cartoon_cache/

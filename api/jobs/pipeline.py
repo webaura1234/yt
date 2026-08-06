@@ -4,15 +4,15 @@ from typing import Any, Awaitable, Callable, Optional
 
 from api.jobs.store import JobStage, update_job
 from utils.audio import DEFAULT_VOICE, generate_voiceover
+from utils.cartoon import generate_scene_images
 from utils.llm import (
     get_description,
     get_most_engaging_titles,
     get_script,
-    get_search_terms,
     get_titles,
+    get_visual_prompts,
 )
 from utils.metadata import save_metadata
-from utils.stock_videos import get_stock_videos
 from utils.video import generate_video
 from utils.yt import auto_upload
 
@@ -47,15 +47,15 @@ async def run_script_stage(
 
     _check_cancel(should_cancel)
     await progress("generating_script", f'Writing script for: "{title}"')
-    script = await asyncio.to_thread(get_script, title)
+    script = await asyncio.to_thread(get_script, title, topic)
 
     _check_cancel(should_cancel)
     await progress("generating_script", "Writing description...")
     description = await asyncio.to_thread(get_description, title, script)
 
     _check_cancel(should_cancel)
-    await progress("generating_script", "Extracting search terms for footage...")
-    search_terms = await asyncio.to_thread(get_search_terms, title, script)
+    await progress("generating_script", "Art-directing the cartoon scenes...")
+    search_terms = await asyncio.to_thread(get_visual_prompts, title, script, topic)
 
     update_job(
         job_id,
@@ -77,12 +77,16 @@ async def run_render_stage(
 ) -> dict[str, Any]:
     """Stage 2: media + voiceover + render, from an already-approved script.
 
-    Reuses utils/stock_videos.py, utils/audio.py, utils/video.py, utils/metadata.py
-    exactly as main.py does today."""
+    Reuses utils/cartoon.py, utils/audio.py, utils/video.py, utils/metadata.py
+    exactly as main.py does today.
+
+    The job field is still called search_terms for schema compatibility with
+    jobs already in the database; it now holds one cartoon-illustration prompt
+    per sentence rather than a stock-footage query."""
     _check_cancel(should_cancel)
     update_job(job_id, stage=JobStage.FETCHING_MEDIA, voice=voice or DEFAULT_VOICE)
-    await progress("fetching_media", "Fetching stock footage...")
-    stock_videos = await asyncio.to_thread(get_stock_videos, job["search_terms"])
+    await progress("fetching_media", "Drawing the cartoon scenes...")
+    scene_images = await asyncio.to_thread(generate_scene_images, job["search_terms"])
 
     _check_cancel(should_cancel)
     await progress("fetching_media", "Generating voiceover...")
@@ -94,7 +98,7 @@ async def run_render_stage(
     update_job(job_id, stage=JobStage.RENDERING)
     await progress("rendering", "Rendering final video (this can take a minute or two)...")
     video_path, credits = await asyncio.to_thread(
-        generate_video, stock_videos, voiceover_path, job["script"], job["search_terms"]
+        generate_video, scene_images, voiceover_path, job["script"], job["search_terms"]
     )
 
     description = job["description"] or ""

@@ -12,6 +12,8 @@ from oauth2client.client import flow_from_clientsecrets
 from oauth2client.file import Storage
 from oauth2client.tools import argparser, run_flow
 
+from config import MADE_FOR_KIDS, TARGET_LANGUAGE, YOUTUBE_CATEGORY_ID
+
 # Explicitly tell the underlying HTTP transport library not to retry, since
 # we are handling retry logic ourselves.
 httplib2.RETRIES = 1
@@ -95,8 +97,19 @@ def initialize_upload(youtube, options):
             description=options.description,
             tags=tags,
             categoryId=options.category,
+            # Telugu. Lets YouTube surface the video to Telugu-speaking families
+            # and stops it auto-detecting the language from the title.
+            defaultLanguage=TARGET_LANGUAGE,
+            defaultAudioLanguage=TARGET_LANGUAGE,
         ),
-        status=dict(privacyStatus=options.privacyStatus),
+        status=dict(
+            privacyStatus=options.privacyStatus,
+            # A COPPA declaration, not a preference. Everything this pipeline
+            # produces is children's content, so it is set unconditionally
+            # rather than read from options - there is no code path here that
+            # should ever upload something not made for kids.
+            selfDeclaredMadeForKids=MADE_FOR_KIDS,
+        ),
     )
 
     # Call the API's videos.insert method to create and upload the video.
@@ -166,7 +179,7 @@ if __name__ == "__main__":
     )
     argparser.add_argument(
         "--category",
-        default="22",
+        default=YOUTUBE_CATEGORY_ID,
         help="Numeric video category. "
         + "See https://developers.google.com/youtube/v3/docs/videoCategories/list",
     )

@@ -25,23 +25,43 @@ def _key(name: str) -> str | None:
     return value
 
 
+# Audience. Everything downstream - topic choice, script voice, vocabulary,
+# visuals, music, upload metadata - is built for this audience and nothing else.
+TARGET_LANGUAGE = "te"  # Telugu
+TARGET_LANGUAGE_NAME = "Telugu"
+AUDIENCE_MIN_AGE = int(os.environ.get("AUDIENCE_MIN_AGE", "5"))
+AUDIENCE_MAX_AGE = int(os.environ.get("AUDIENCE_MAX_AGE", "12"))
+
+# Every upload is declared as children's content. This is a legal declaration
+# under COPPA, not a preference, so it is not env-overridable: this pipeline
+# produces nothing that isn't made for kids.
+MADE_FOR_KIDS = True
+
+# YouTube category 27 = Education.
+YOUTUBE_CATEGORY_ID = os.environ.get("YOUTUBE_CATEGORY_ID", "27")
+
+# Learning areas for Telugu-speaking children. Each is a teachable subject with
+# obvious comedic potential, phrased as a curriculum area rather than a single
+# fact so get_topic() can specialize it into a concrete lesson. Nothing here is
+# adult, political, violent, scary or controversial - see utils/safety.py, which
+# independently enforces that on every piece of generated text.
 POSSIBLE_TOPICS = [
-    # "NASA Facts",
-    "Controversial Events",
-    # "Bold Predictions",
-    "Controversial Actions by Celebrities",
-    "Controversial Actions by Well Known Companies",
-    "Controversial Science Facts",
-    "Controversial Historical Mysteries",
-    "Controversial Tech Milestones",
-    "Controversial Cultural Oddities",
-    "Controversial Psychological Phenomena",
-    "Controversial Space Exploration Events",
-    "Controvercies around Cryptocurrency and Blockchain",
-    "Controversial Laws",
-    "Controversial Secrets of Successful People",
-    "Controversial Eco-Friendly movements",
-    "Controversial World Records",
+    "Everyday Science Explained Simply",
+    "Fun Mathematics and Number Tricks",
+    "Amazing Animals and Their Habits",
+    "Space, Planets and Stars",
+    "Our Body and Staying Healthy",
+    "Hygiene and Good Daily Habits",
+    "Nature, Plants and the Weather",
+    "Telugu Language: Words, Rhymes and Proverbs",
+    "English Vocabulary for Telugu Kids",
+    "Moral Values and Good Behaviour",
+    "Indian History and Great People",
+    "Telugu Festivals and Traditions",
+    "General Knowledge Every Kid Should Know",
+    "How Everyday Things Work",
+    "Food, Farming and Where It Comes From",
+    "Water, Earth and Taking Care of Our Planet",
 ]
 
 
@@ -54,6 +74,17 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1")
 
 GEMINI_TTS_MODEL = os.environ.get("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+
+# Image model used to draw every scene. Each sentence gets its own illustration,
+# so a 12-sentence script is 12 image calls - the dominant per-video cost, and
+# the reason generated frames are cached by prompt (see utils/cartoon.py).
+GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+
+# Cache of generated artwork, keyed by prompt hash. Survives across runs so a
+# repeated scene is never paid for twice.
+CARTOON_CACHE_PATH = Path(os.environ.get("CARTOON_CACHE_PATH", "cartoon_cache"))
+
+os.makedirs(CARTOON_CACHE_PATH, exist_ok=True)
 
 # Default text-generation model for scripts/titles/descriptions/search terms.
 # NOTE: previously defaulted to the "gemini-flash-latest" alias to avoid a

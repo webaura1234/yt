@@ -57,39 +57,70 @@ so `config.GEMINI_API_KEY` must never be enforced at import time - use
 - `utils/` - Core functionality modules
 - `credentials/` - YouTube OAuth credentials (client_secrets.json, tokens.json)
 - `music/` - Background music files (.mp3)
+- `cartoon_cache/` - Generated scene artwork, cached by prompt hash (gitignored)
+- `fonts/telugu_bold.ttf` - Noto Sans Telugu Bold (OFL-1.1), required for subtitles
 - `secondary_video/` - Secondary video content (.mp4)
 - `temp/` - Temporary files during processing
 - `output/` - Final generated videos organized by date
 
 ## Architecture Overview
 
-This is an automated YouTube Shorts/TikTok video generation system that creates engaging short-form content using AI. The application follows a pipeline architecture:
+This is a **Telugu educational comedy engine for children aged 5-12**. It
+produces original, safe, funny cartoon Shorts that teach one real concept each,
+for YouTube Kids. It is not a general-purpose Shorts generator, and changes
+should not push it back toward being one.
 
-### Core Pipeline (main.py:55-121)
-1. **Topic Generation** - Selects from predefined controversial topics
-2. **Content Creation** - Generates titles, scripts, and descriptions using Gemini (default) with optional OpenAI fallback
-3. **Media Assembly** - Combines stock footage, voiceover, and subtitles
-4. **Upload & Storage** - Automatically uploads to platforms and saves metadata
+Non-negotiables, enforced in code rather than left to prompts:
+- **Telugu.** Scripts, titles, descriptions and subtitles are Telugu. Subtitle
+  rendering needs both a Telugu font and shaping - see `check_subtitle_font_support`.
+- **Child-safe.** `utils/safety.py` gates every generated string. Adult,
+  political, violent, horror and controversial material is rejected and
+  regenerated, never edited down.
+- **Made for kids.** `config.MADE_FOR_KIDS` is a COPPA declaration set
+  unconditionally on upload, not a toggle.
+
+### Core Pipeline (main.py)
+1. **Topic** - a learning area from `POSSIBLE_TOPICS`, specialized by an LLM
+   call into one concrete lesson a child would ask about
+2. **Script** - conversational Telugu comedy narration starring the recurring
+   cast, structured hook -> silly mistake -> real answer -> aha -> ending
+3. **Art direction** - one cartoon-illustration prompt per sentence
+4. **Artwork** - each prompt drawn by the image model, cached by prompt hash
+5. **Render** - artwork + Ken Burns + word-timed animated Telugu captions
+6. **Upload** - Telugu metadata, Education category, made-for-kids declared
 
 ### Key Modules
 
-**utils/llm.py** - Text generation for titles/scripts/descriptions/search terms
-- `_generate()` - Provider abstraction: tries Gemini first, falls back to OpenAI only if configured and Gemini fails
-- `get_topic()` - Random topic selection from `POSSIBLE_TOPICS`
-- `get_titles()`, `get_script()` - AI-generated content
-- `get_most_engaging_titles()` - Content ranking and selection
+**utils/characters.py** - The recurring cast. Fixed data, not model-invented, so
+children recognise the same characters and the illustrator draws them the same
+way every time. `cast_for_topic()` is deterministic in the topic.
 
-**utils/video.py** - Video processing and assembly
-- `generate_word_timestamps()` - AssemblyAI transcription for karaoke-style subtitles
-- `combine_videos()` - Concatenates stock footage to match audio duration
-- `generate_video()` - Final composition with subtitles, audio, and secondary content
+**utils/safety.py** - The kid-safety gate. `assert_safe`/`is_safe`/`find_unsafe`
+over an English word-boundary blocklist and a Telugu substring blocklist (Telugu
+is agglutinative, so stems appear with suffixes attached). A floor, not a
+substitute for human review before publishing.
 
-**utils/audio.py** - Voice generation and audio processing
-- `generate_voiceover()` - Google Gemini TTS with custom voice (Fenrir)
-- `get_random_background_song()` - Random background music selection
+**utils/llm.py** - Telugu text generation
+- `_generate()` - Gemini first, OpenAI only as a configured fallback
+- `_generate_safe()` - regenerates when the safety gate rejects output
+- `get_topic()`, `get_titles()`, `get_script()`, `get_description()`
+- `get_visual_prompts()` - one cartoon prompt per sentence (replaced the old
+  `get_search_terms()` stock-footage search)
 
-**utils/stock_videos.py** - External media sourcing
-- `get_stock_videos()` - Pexels API integration for relevant footage
+**utils/cartoon.py** - Per-sentence artwork
+- `generate_scene_images()` - one drawing per sentence, cached by prompt hash;
+  the dominant per-video cost
+- Falls back to a generated pattern card rather than aborting a video
+
+**utils/video.py** - Rendering
+- `check_subtitle_font_support()` - fails loudly if Telugu can't render
+- `combine_scene_images()` - the default background path, artwork + Ken Burns
+- `combine_videos()` - legacy stock-footage path, kept only to replay old jobs
+- `create_karaoke_subtitles()` - animated word-by-word Telugu captions
+
+**utils/audio.py** - Voice
+- `generate_voiceover()` - Gemini TTS, with `TELUGU_KIDS_DELIVERY` steering an
+  energetic children's-storyteller performance
 
 **utils/yt.py** - Platform upload functionality
 - `auto_upload()` - YouTube upload with OAuth 2.0 authentication
@@ -113,4 +144,7 @@ Key configurations in `.env`:
 - **One-time Mode**: Single execution when `RUN_ONCE=true`
 - **Docker Mode**: Containerized execution with volume mounts for credentials and content
 
-The system is designed for unattended operation, generating content based on controversial topics to maximize engagement, with comprehensive error handling and notification systems.
+The system is designed for unattended operation, with comprehensive error
+handling and notification systems. Unattended does not mean unreviewed: the
+safety gate is a mechanical floor, and content for children should be watched by
+a person before it is made public.

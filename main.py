@@ -7,17 +7,17 @@ from tqdm import tqdm
 from config import CRON_SCHEDULE, RUN_ONCE, VIDEO_COUNT, require_gemini_api_key
 from logging_setup import configure_logging
 from utils.audio import generate_voiceover
+from utils.cartoon import generate_scene_images
 from utils.llm import (
     get_description,
     get_most_engaging_titles,
     get_script,
-    get_search_terms,
     get_titles,
     get_topic,
+    get_visual_prompts,
 )
 from utils.metadata import save_metadata
 from utils.notifications import send_error_notification, send_success_notification
-from utils.stock_videos import get_stock_videos
 from utils.video import generate_video
 from utils.yt import auto_upload
 
@@ -25,11 +25,11 @@ configure_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def generate_video_data(title):
+def generate_video_data(title, topic=""):
     logger.info("[Generated Title]")
     logger.info(title)
 
-    script = get_script(title)
+    script = get_script(title, topic)
     logger.info("[Generated Script]")
     logger.info(script)
 
@@ -37,17 +37,17 @@ def generate_video_data(title):
     logger.info("[Generated Description]")
     logger.info(description)
 
-    search_terms = get_search_terms(title, script)
-    logger.info("[Generated Search Terms]")
-    logger.info(search_terms)
+    visual_prompts = get_visual_prompts(title, script, topic)
+    logger.info("[Generated Visual Prompts]")
+    logger.info(visual_prompts)
 
-    stock_videos = get_stock_videos(search_terms)
-    logger.info("[Generated Stock Videos]")
+    scene_images = generate_scene_images(visual_prompts)
+    logger.info("[Generated Cartoon Scenes]")
 
     voiceover = generate_voiceover(script)
     logger.info("[Generated Voiceover]")
 
-    return title, description, script, search_terms, stock_videos, voiceover
+    return title, description, script, visual_prompts, scene_images, voiceover
 
 
 def generate_videos(n: int = 4) -> None:
@@ -70,26 +70,26 @@ def generate_videos(n: int = 4) -> None:
                     title,
                     description,
                     script,
-                    search_terms,
-                    stock_videos,
+                    visual_prompts,
+                    scene_images,
                     voiceover,
-                ) = generate_video_data(title)
+                ) = generate_video_data(title, topic)
 
                 logging.debug(f"Title: {title}")
                 logging.debug(f"Description: {description}")
                 logging.debug(f"Script: {script}")
-                logging.debug(f"Search terms: {search_terms}")
-                logging.debug(f"Stock videos: {stock_videos}")
+                logging.debug(f"Visual prompts: {visual_prompts}")
+                logging.debug(f"Scene images: {scene_images}")
                 logging.debug(f"Voiceover: {voiceover}")
 
-                video, credits = generate_video(stock_videos, voiceover, script, search_terms)
+                video, credits = generate_video(scene_images, voiceover, script, visual_prompts)
                 logger.info("[Generated Video]")
 
                 if credits:
                     description = description + "\n\n" + "\n".join(credits)
 
                 new_video_file = save_metadata(
-                    title, description, None, script, search_terms, video
+                    title, description, None, script, visual_prompts, video
                 )
                 logger.info("[Saved Video]")
 
