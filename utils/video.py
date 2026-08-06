@@ -17,11 +17,11 @@ from moviepy.editor import (
     CompositeAudioClip,
     CompositeVideoClip,
     ImageClip,
-    TextClip,
     VideoFileClip,
     concatenate_videoclips,
 )
 from moviepy.video.fx.all import crop, freeze
+from PIL import Image, ImageDraw, ImageFont
 
 from config import (
     ASSEMBLY_AI_API_KEY,
@@ -53,6 +53,18 @@ logger = logging.getLogger(__name__)
 CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1920
 LOWER_THIRD_HEIGHT = CANVAS_HEIGHT // 3
+
+# Karaoke subtitle styling. Text is rasterised with Pillow rather than moviepy's
+# TextClip: TextClip shells out to ImageMagick's `convert`, passing the caption
+# through a temp file as `@/tmp/...`, which the default Debian/Ubuntu policy.xml
+# forbids ("attempt to perform an operation not allowed by the security policy").
+# Pillow is already a dependency, needs no external binary, and renders the same
+# stroked text - so the whole ImageMagick dependency is gone.
+SUBTITLE_FONT_PATH = "fonts/bold_font.ttf"
+SUBTITLE_FONT_SIZE = 118
+SUBTITLE_COLOR = "#FFFF00"
+SUBTITLE_STROKE_COLOR = "black"
+SUBTITLE_STROKE_WIDTH = 6
 
 # Generic b-roll queries used ONLY when no script-derived keywords are available
 # (e.g. the function is called standalone). Normal operation searches Pexels using
@@ -424,7 +436,50 @@ def combine_videos(
     return combined_video_path
 
 
-def create_karaoke_subtitles(words: List[dict], video_duration: float) -> List[TextClip]:
+def render_text_image(
+    text: str,
+    font_path: str = SUBTITLE_FONT_PATH,
+    font_size: int = SUBTITLE_FONT_SIZE,
+    color: str = SUBTITLE_COLOR,
+    stroke_color: str = SUBTITLE_STROKE_COLOR,
+    stroke_width: int = SUBTITLE_STROKE_WIDTH,
+) -> np.ndarray:
+    """Rasterise `text` to an RGBA array (transparent background, stroked
+    outline) ready to hand to moviepy's ImageClip. Width is cropped to the
+    glyphs; height is fixed by the font's metrics so successive words share a
+    baseline."""
+    font = ImageFont.truetype(font_path, font_size)
+
+    # Height comes from the font's own ascent/descent, NOT from the glyphs' ink
+    # bounds. Subtitle clips are positioned by their top edge, so a per-word
+    # tight crop would push the baseline around as words gain or lose
+    # descenders ("yes" vs "HI") and make the captions jitter. Fixed metrics
+    # keep every word on the same baseline. Width stays tight because the
+    # clip is centred horizontally.
+    ascent, descent = font.getmetrics()
+    height = ascent + descent + 2 * stroke_width
+    left, _, right, _ = font.getbbox(text, stroke_width=stroke_width)
+    width = max(right - left, 1)
+
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    ImageDraw.Draw(image).text(
+        # anchor="la": (x, y) is the left edge of the ascender line. Shifting x
+        # by -left pulls the glyph ink (and its stroke) flush to the left edge;
+        # the stroke_width y offset leaves room for the stroke above the
+        # ascender.
+        (-left, stroke_width),
+        text,
+        font=font,
+        fill=color,
+        anchor="la",
+        stroke_width=stroke_width,
+        stroke_fill=stroke_color,
+    )
+
+    return np.array(image)
+
+
+def create_karaoke_subtitles(words: List[dict], video_duration: float) -> List[ImageClip]:
     """Create karaoke-style word-by-word subtitle clips with highlighting, positioned
     in the lower third (not screen-center) so they read like captions over a
     full-screen background rather than sitting in the middle of the footage."""
@@ -436,14 +491,7 @@ def create_karaoke_subtitles(words: List[dict], video_duration: float) -> List[T
 
         # Create highlighted word clip that disappears when next word starts
         highlighted_clip = (
-            TextClip(
-                word['text'],
-                font="fonts/bold_font.ttf",
-                fontsize=118,
-                color="#FFFF00",  # Bright yellow
-                stroke_color="black",
-                stroke_width=6,
-            )
+            ImageClip(render_text_image(word['text']))
             .set_start(word['start'])
             .set_end(min(next_word_start, word['end'] + 0.3))
             .set_pos(("center", 0.74), relative=True)

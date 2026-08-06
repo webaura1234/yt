@@ -21,6 +21,7 @@ from utils.video import (
     combine_videos,
     create_karaoke_subtitles,
     create_lower_third_backdrop,
+    render_text_image,
     subject_aware_crop,
 )
 
@@ -107,6 +108,57 @@ def test_create_lower_third_backdrop_is_transparent_at_top_and_darker_at_bottom(
     assert mask_frame[0, 0] == 0
     assert mask_frame[-1, 0] > mask_frame[0, 0]
     assert mask_frame[-1, 0] == pytest.approx(0.65, abs=0.05)
+
+
+def test_render_text_image_is_rgba_with_opaque_glyphs_and_transparent_corners():
+    image = render_text_image("HI")
+
+    assert image.ndim == 3 and image.shape[2] == 4, "expected an RGBA array"
+    assert image.shape[0] > 0 and image.shape[1] > 0
+
+    alpha = image[:, :, 3]
+    assert alpha.max() == 255, "glyphs should be fully opaque somewhere"
+    # A tight bbox around "HI" still leaves the outer corners empty, so the
+    # background must be transparent rather than filled black/white.
+    assert alpha[0, 0] == 0
+    assert alpha[-1, -1] == 0
+
+
+def test_render_text_image_height_is_constant_across_words():
+    # Subtitle clips are positioned by their top edge, so every word must
+    # rasterise to the same height or the captions jitter vertically as
+    # descenders come and go.
+    heights = {render_text_image(word).shape[0] for word in ("HI", "yes", "jump", "OK")}
+    assert len(heights) == 1
+
+
+def test_render_text_image_keeps_stroke_inside_the_canvas():
+    # A word whose glyphs reach the ascender and descender lines must still
+    # have its full outline inside the image rather than clipped at the edges.
+    image = render_text_image("Jhg")
+    alpha = image[:, :, 3]
+
+    assert not alpha[0, :].any(), "stroke should not touch the top edge"
+    assert not alpha[-1, :].any(), "stroke should not touch the bottom edge"
+
+
+def test_render_text_image_grows_with_font_size():
+    small = render_text_image("HI", font_size=40)
+    large = render_text_image("HI", font_size=120)
+
+    assert large.shape[0] > small.shape[0]
+    assert large.shape[1] > small.shape[1]
+
+
+def test_render_text_image_applies_fill_and_stroke_colors():
+    image = render_text_image("HI", color="#FF0000", stroke_color="#0000FF")
+    opaque = image[image[:, :, 3] == 255]
+
+    reds = opaque[(opaque[:, 0] > 200) & (opaque[:, 1] < 60) & (opaque[:, 2] < 60)]
+    blues = opaque[(opaque[:, 2] > 200) & (opaque[:, 0] < 60) & (opaque[:, 1] < 60)]
+
+    assert len(reds) > 0, "expected red fill pixels"
+    assert len(blues) > 0, "expected blue stroke pixels"
 
 
 def test_create_karaoke_subtitles_renders_in_lower_third_not_top_half():

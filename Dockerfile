@@ -1,15 +1,8 @@
 FROM python:3.12.1-bookworm
 
-RUN apt remove imagemagick -y
-
-# Install ImageMagick from source via SoftCreatR/imei ("ImageMagick Easy Install",
-# https://github.com/SoftCreatR/imei), pinned to a specific signed release instead of
-# tracking the "main" bootstrap target, for reproducible builds.
-ENV RELEASE_TAG=im-7.1.2-29_aom-3.13.3_heif-1.23.1_jxl-0.12.0
-RUN t=$(mktemp) && \
-    wget 'https://dist.1-2.dev/imei.sh' -qO "$t" && \
-    bash "$t" && \
-    rm "$t"
+# No ImageMagick: subtitles are rasterised with Pillow (see
+# utils/video.render_text_image), so the image needs no external image binary.
+# ffmpeg comes from imageio-ffmpeg, which moviepy pulls in.
 
 # Set the working directory
 WORKDIR /app
