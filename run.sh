@@ -93,8 +93,14 @@ for _ in $(seq 1 60); do
 done
 
 log "starting web on http://localhost:$WEB_PORT"
+# Default the browser to calling the API directly. Note ${VAR-default}, not
+# ${VAR:-default}: an explicitly empty NEXT_PUBLIC_API_URL is meaningful (it
+# selects same-origin URLs proxied by Next, which is how the devcontainer runs
+# this) and must survive rather than being replaced by the default.
+API_URL="${NEXT_PUBLIC_API_URL-http://localhost:$API_PORT}"
 set -m
-(cd web && NEXT_PUBLIC_API_URL="http://localhost:$API_PORT" npm run dev -- --port "$WEB_PORT") &
+(cd web && NEXT_PUBLIC_API_URL="$API_URL" API_PROXY_TARGET="http://localhost:$API_PORT" \
+  npm run dev -- --port "$WEB_PORT") &
 WEB_PID=$!
 set +m
 
