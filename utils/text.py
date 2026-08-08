@@ -1,16 +1,25 @@
 import re
 from typing import List, Tuple
 
-_SENTENCE_BOUNDARY_RE = re.compile(
-    r'(?<=[.!?])\s+(?=[A-Z0-9"‘’“”])'
-)
+# Sentence-ending punctuation, including the Devanagari danda and double danda
+# which Indic scripts also use.
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?।॥])\s+")
 
 
 def split_sentences(script: str) -> List[str]:
-    """Regex sentence split (no NLP dependency): splits on '.'/'!'/'?' followed by
-    whitespace and a capital letter, digit, or opening/closing quote mark - which
-    also means it naturally doesn't split mid-number ("3.5" has no whitespace
-    after the '.', so the lookahead never matches there).
+    """Regex sentence split (no NLP dependency): splits on sentence-ending
+    punctuation followed by whitespace.
+
+    The boundary deliberately does NOT require the next sentence to start with a
+    capital letter. It used to, and that quietly broke every non-Latin script:
+    Telugu has no capitals, so the lookahead never matched and an entire Telugu
+    script came back as ONE sentence. Everything downstream is per-sentence -
+    the storyboard, the shot selection, the visual for each line - so a whole
+    video collapsed to a single static image. Requiring a capital is an
+    English-only assumption this pipeline cannot make.
+
+    Decimals are still safe: "3.5" has no whitespace after the '.', so the
+    boundary never matches inside a number.
 
     Known limitation: doesn't special-case abbreviations (e.g. "Mr. Smith" would
     split into two sentences) - acceptable given this project's short,

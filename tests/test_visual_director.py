@@ -272,3 +272,23 @@ def test_review_rejects_low_confidence_approvals(monkeypatch):
     )
 
     assert not review_clip(_brief(), np.zeros((64, 64, 3), dtype=np.uint8)).approved
+
+
+def test_query_decoration_does_not_repeat_a_modifier_already_present():
+    # "seed sprouting time lapse" must not become "time lapse seed sprouting
+    # time lapse" - that reads as keyword spam to a stock library and returns
+    # worse results than the query the model actually wrote.
+    payload = {
+        "scenes": [
+            {
+                "subject": "seed",
+                "shot_style": "time lapse",
+                "queries": ["seed sprouting time lapse", "real soil close up"],
+            }
+        ]
+    }
+    briefs = build_storyboard("t", "One line.", generate=lambda p, json_mode: json.dumps(payload))
+
+    for query in briefs[0].queries:
+        assert query.count("time lapse") <= 1, query
+        assert query.count("real ") <= 1, query

@@ -91,3 +91,38 @@ def test_align_sentences_to_word_times_falls_back_when_words_list_is_empty():
 
 def test_align_sentences_to_word_times_empty_sentences_returns_empty_list():
     assert align_sentences_to_word_times([], [], total_duration=5.0) == []
+
+
+def test_split_sentences_splits_telugu_narration():
+    # Regression: the boundary used to require the next sentence to start with a
+    # capital Latin letter. Telugu has no capitals, so an entire Telugu script
+    # came back as one sentence - and since every visual stage is per-sentence,
+    # the whole video collapsed to a single static image.
+    script = (
+        "అసలు వంకాయలు తయారవుతాయని మీకు తెలుసా. "
+        "పిల్లి బామ్మ అడిగింది. "
+        "తాతయ్య జ్ఞాని నవ్వారు."
+    )
+
+    assert len(split_sentences(script)) == 3
+
+
+def test_split_sentences_handles_telugu_question_and_exclamation():
+    script = "ఇది ఏమిటి? నాకు తెలియదు! సరే చూద్దాం."
+
+    assert len(split_sentences(script)) == 3
+
+
+def test_split_sentences_splits_on_the_danda_used_by_indic_scripts():
+    assert len(split_sentences("पहला वाक्य। दूसरा वाक्य।")) == 2
+
+
+def test_split_sentences_handles_blank_lines_between_sentences():
+    # The script writer returns paragraphs separated by blank lines.
+    script = "మొదటి వాక్యం.\n\nరెండవ వాక్యం.\n\nమూడవ వాక్యం."
+
+    assert len(split_sentences(script)) == 3
+
+
+def test_split_sentences_still_splits_english():
+    assert len(split_sentences("This is one. This is two. This is three.")) == 3

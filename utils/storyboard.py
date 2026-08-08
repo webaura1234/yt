@@ -186,7 +186,18 @@ def _decorate_queries(queries: List[str], brief: SceneBrief) -> List[str]:
     seen = set()
 
     for query in queries:
-        for variant in (query, f"{brief.shot_style} {query}", f"{_REALISM_MODIFIERS[0]} {query}"):
+        lowered = query.lower()
+        variants = [query]
+        # Only prepend a modifier the query doesn't already carry. Without this
+        # check a model that helpfully wrote "seed sprouting time lapse" gets
+        # "time lapse seed sprouting time lapse", which reads as keyword spam to
+        # a stock library and returns worse results than the original.
+        if brief.shot_style not in lowered:
+            variants.append(f"{brief.shot_style} {query}")
+        if not any(modifier in lowered for modifier in _REALISM_MODIFIERS):
+            variants.append(f"{_REALISM_MODIFIERS[0]} {query}")
+
+        for variant in variants:
             cleaned = re.sub(r"\s+", " ", variant).strip().lower()
             if cleaned and cleaned not in seen:
                 seen.add(cleaned)
