@@ -7,15 +7,16 @@ from tqdm import tqdm
 from config import CRON_SCHEDULE, RUN_ONCE, VIDEO_COUNT, require_gemini_api_key
 from logging_setup import configure_logging
 from utils.audio import generate_voiceover
-from utils.cartoon import generate_scene_images
 from utils.llm import (
+    _generate,
     get_description,
     get_most_engaging_titles,
     get_script,
     get_titles,
     get_topic,
-    get_visual_prompts,
 )
+from utils.storyboard import brief_rows, build_storyboard, storyboard_table
+from utils.visual_director import direct_scenes, framing_report, unresolved_scenes
 from utils.metadata import save_metadata
 from utils.notifications import send_error_notification, send_success_notification
 from utils.video import generate_video
@@ -37,17 +38,41 @@ def generate_video_data(title, topic=""):
     logger.info("[Generated Description]")
     logger.info(description)
 
-    visual_prompts = get_visual_prompts(title, script, topic)
-    logger.info("[Generated Visual Prompts]")
-    logger.info(visual_prompts)
+    # Read every narration line before searching for anything: subject, action,
+    # location, mood, and several competing queries per line.
+    briefs = build_storyboard(title, script, generate=_generate)
+    logger.info("[Storyboard]")
+    for brief in briefs:
+        logger.info(f"  {brief.index + 1}. {brief.summary()} | queries: {brief.queries[:3]}")
 
-    scene_images = generate_scene_images(visual_prompts)
-    logger.info("[Generated Cartoon Scenes]")
+    # Search, score, frame and review each scene until it earns its place.
+    selections = direct_scenes(briefs)
+
+    # The storyboard table goes out BEFORE rendering, while the shot choices are
+    # still cheap to change.
+    logger.info("[Storyboard Review]")
+    logger.info(
+        "\n" + storyboard_table(brief_rows(briefs, [s.table_row() for s in selections]))
+    )
+    logger.info("\n" + framing_report(selections))
+
+    weak = unresolved_scenes(selections)
+    if weak:
+        # Loud, and named. The old pipeline quietly dropped generic B-roll into
+        # these slots, which is the failure this whole stage exists to remove.
+        logger.error(
+            f"{len(weak)}/{len(selections)} scenes found no footage that "
+            "represents their narration:"
+        )
+        for scene in weak:
+            logger.error(f"  - {scene.brief.sentence[:70]}")
+
+    queries = [q for brief in briefs for q in brief.queries[:1]]
 
     voiceover = generate_voiceover(script)
     logger.info("[Generated Voiceover]")
 
-    return title, description, script, visual_prompts, scene_images, voiceover
+    return title, description, script, queries, selections, voiceover
 
 
 def generate_videos(n: int = 4) -> None:
@@ -70,26 +95,26 @@ def generate_videos(n: int = 4) -> None:
                     title,
                     description,
                     script,
-                    visual_prompts,
-                    scene_images,
+                    queries,
+                    selections,
                     voiceover,
                 ) = generate_video_data(title, topic)
 
                 logging.debug(f"Title: {title}")
                 logging.debug(f"Description: {description}")
                 logging.debug(f"Script: {script}")
-                logging.debug(f"Visual prompts: {visual_prompts}")
-                logging.debug(f"Scene images: {scene_images}")
+                logging.debug(f"Search queries: {queries}")
+                logging.debug(f"Scene selections: {selections}")
                 logging.debug(f"Voiceover: {voiceover}")
 
-                video, credits = generate_video(scene_images, voiceover, script, visual_prompts)
+                video, credits = generate_video(selections, voiceover, script, queries)
                 logger.info("[Generated Video]")
 
                 if credits:
                     description = description + "\n\n" + "\n".join(credits)
 
                 new_video_file = save_metadata(
-                    title, description, None, script, visual_prompts, video
+                    title, description, None, script, queries, video
                 )
                 logger.info("[Saved Video]")
 

@@ -529,6 +529,124 @@ def combine_scene_images(
     return combined_video_path
 
 
+def _build_background(sources, script: str, words: List[dict], audio_duration: float) -> Path:
+    """Route to the right background builder for whatever `sources` is.
+
+    Three shapes reach here. SceneSelections are the current pipeline. Lists of
+    candidate pools are historical dashboard jobs stored before this change, and
+    plain image paths are the cartoon path - both are kept so replaying an old
+    job renders what it originally meant rather than crashing or, worse,
+    silently rendering something else.
+    """
+    if not sources:
+        raise ValueError("no visual sources supplied")
+
+    first = sources[0]
+    if hasattr(first, "clip_path"):
+        return combine_selected_scenes(sources, script, words, audio_duration)
+    if isinstance(first, (list, tuple)):
+        return combine_videos(sources, script, words, audio_duration)
+    return combine_scene_images(list(sources), script, words, audio_duration)
+
+
+def combine_selected_scenes(
+    selections, script: str, words: List[dict], audio_duration: float
+) -> Path:
+    """Build the background from footage chosen by the visual director.
+
+    Each scene's clip is held for exactly as long as its sentence is narrated
+    and framed with that scene's own plan, so the shot on screen is the shot the
+    editor review approved for those words.
+
+    Unlike the old footage path this does NOT split a sentence into sub-shots.
+    Sub-shots existed to add motion when every clip was interchangeable B-roll;
+    now each clip was chosen to illustrate one specific sentence, so cutting
+    away from it mid-sentence throws away the thing that was selected.
+    """
+    from utils.framing import FramingMode, apply_framing
+
+    video_id = uuid.uuid4()
+    combined_video_path = TEMP_PATH / f"{video_id}.mp4"
+
+    sentences = split_sentences(script) or ["."]
+    times = align_sentences_to_word_times(sentences, words, audio_duration)
+
+    resolved = [s for s in selections if getattr(s, "clip_path", None)]
+    if not resolved:
+        raise ValueError(
+            "No scene has approved footage; refusing to render a video of "
+            "placeholder cards. Check the storyboard report for why every "
+            "scene was rejected."
+        )
+
+    sentence_clips = []
+    for index, (start, end) in enumerate(times):
+        duration = max(end - start, 0.1)
+        selection = (
+            selections[index]
+            if index < len(selections) and getattr(selections[index], "clip_path", None)
+            else resolved[min(index, len(resolved) - 1)]
+        )
+
+        raw = VideoFileClip(str(selection.clip_path)).without_audio()
+        if raw.duration and raw.duration < duration:
+            loops = math.ceil(duration / raw.duration)
+            raw = concatenate_videoclips([raw] * loops)
+
+        shot = raw.subclip(0, min(duration, raw.duration)).set_fps(30)
+
+        plan = getattr(selection, "framing_plan", None)
+        if plan is not None:
+            shot = apply_framing(shot, plan, CANVAS_WIDTH, CANVAS_HEIGHT)
+        else:
+            from utils.framing import frame_clip
+
+            shot, plan = frame_clip(shot, CANVAS_WIDTH, CANVAS_HEIGHT)
+
+        # Ken Burns only on cropped shots. A fit-with-blur shot was chosen
+        # precisely because its subject barely fits; drifting it would push the
+        # subject back off the edge the fit was protecting.
+        if plan.mode is FramingMode.CROP:
+            shot = _apply_shot_effect(shot, _assign_effect(index))
+
+        sentence_clips.append(shot.set_duration(duration))
+
+    shortest = min(c.duration for c in sentence_clips)
+    transition = min(VIDEO_TRANSITION_DURATION, shortest / 4)
+
+    # Overlapping crossfades pull the timeline shorter than the narration by
+    # (n-1) * transition. Absorb that into the final shot up front rather than
+    # freezing a frame afterwards: freeze(t="end") samples exactly at the
+    # composed clip's duration, which indexes past its last segment and raises
+    # IndexError. Holding the last shot slightly longer is also what an editor
+    # would do - it leaves the closing line on screen instead of on a still.
+    if len(sentence_clips) > 1 and transition > 0:
+        shortfall = audio_duration - (
+            sum(c.duration for c in sentence_clips) - transition * (len(sentence_clips) - 1)
+        )
+        if shortfall > 0:
+            last = sentence_clips[-1]
+            sentence_clips[-1] = last.set_duration(last.duration + shortfall)
+
+        transitioned = [sentence_clips[0]] + [
+            c.crossfadein(transition) for c in sentence_clips[1:]
+        ]
+        final_clip = concatenate_videoclips(transitioned, method="compose", padding=-transition)
+    else:
+        final_clip = concatenate_videoclips(sentence_clips)
+        if final_clip.duration < audio_duration:
+            final_clip = final_clip.set_duration(audio_duration)
+
+    final_clip = final_clip.set_fps(30)
+    final_clip.write_videofile(
+        str(combined_video_path),
+        threads=os.cpu_count(),
+        temp_audiofile=str(TEMP_PATH / f"{video_id}.mp3"),
+    )
+
+    return combined_video_path
+
+
 def check_subtitle_font_support(sample: str = "పిల్లలు") -> None:
     """Fail loudly at startup if Telugu subtitles cannot render.
 
@@ -714,12 +832,7 @@ def generate_video(
     # transcription call per video.
     words = generate_word_timestamps(tts_path)
 
-    if scene_images and isinstance(scene_images[0], (list, tuple)):
-        combined_video_path = combine_videos(scene_images, script, words, audio.duration)
-    else:
-        combined_video_path = combine_scene_images(
-            list(scene_images), script, words, audio.duration
-        )
+    combined_video_path = _build_background(scene_images, script, words, audio.duration)
 
     # Create karaoke subtitle clips
     subtitle_clips = create_karaoke_subtitles(words, audio.duration)
@@ -827,6 +940,61 @@ def _search_pexels_video_candidates(
             candidates.append(best_file["link"])
 
     return candidates
+
+
+def _search_pexels_video_records(query: str, per_page: int = 8) -> List[dict]:
+    """Pexels results with the metadata the scoring stage needs.
+
+    The URL-only variant above is kept for the secondary-overlay path, but
+    scoring cannot work from a bare link: orientation, resolution, duration and
+    the provider ID (used for dedup and as the only available recency signal)
+    all have to come off the search result. Returns dicts with id/url/width/
+    height/duration/tags, highest-resolution file per video.
+    """
+    if not PEXELS_API_KEY:
+        return []
+
+    try:
+        response = requests.get(
+            "https://api.pexels.com/videos/search",
+            headers={"Authorization": PEXELS_API_KEY},
+            params={"query": query, "per_page": per_page},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as e:
+        logger.warning(f"Pexels search failed for '{query}': {e}")
+        return []
+
+    records = []
+    for video in payload.get("videos", []):
+        best_file = None
+        for file in video.get("video_files", []):
+            if "https://" not in file.get("link", ""):
+                continue
+            if best_file is None or file.get("width", 0) > best_file.get("width", 0):
+                best_file = file
+        if not best_file:
+            continue
+
+        records.append(
+            {
+                "id": str(video.get("id", "")),
+                "url": best_file["link"],
+                "width": int(best_file.get("width") or video.get("width") or 0),
+                "height": int(best_file.get("height") or video.get("height") or 0),
+                "duration": float(video.get("duration") or 0.0),
+                # Pexels has no tag list on video results; the alt text and the
+                # page URL slug are the only descriptive text it returns, and
+                # both carry the shot's subject words.
+                "tags": " ".join(
+                    str(video.get(key, "")) for key in ("url", "alt")
+                ).replace("-", " "),
+            }
+        )
+
+    return records
 
 
 def _validate_video_file(
