@@ -98,6 +98,10 @@ class JobResponse(BaseModel):
     script: Optional[str] = None
     description: Optional[str] = None
     search_terms: Optional[list[str]] = None
+    # The per-sentence shot plan: subject, action, location and the queries that
+    # will be searched. Exposed so the dashboard can show what each scene is
+    # going to look for while the job is paused for review.
+    storyboard: Optional[list[dict]] = None
     voice: Optional[str] = None
     video_path: Optional[str] = None
     youtube_video_id: Optional[str] = None

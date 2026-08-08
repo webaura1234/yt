@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     script TEXT,
     description TEXT,
     search_terms_json TEXT,
+    storyboard_json TEXT,
     voice TEXT,
     video_path TEXT,
     youtube_video_id TEXT,
@@ -22,6 +23,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at TEXT NOT NULL
 );
 """
+
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS won't add a
+# column to a table that already exists, so an existing jobs.db would keep the
+# old shape and every write touching the new column would fail.
+_ADDED_COLUMNS = (("storyboard_json", "TEXT"),)
 
 
 def get_connection() -> sqlite3.Connection:
@@ -34,6 +40,20 @@ def get_connection() -> sqlite3.Connection:
 def init_db() -> None:
     with get_connection() as conn:
         conn.executescript(_SCHEMA)
+        _apply_migrations(conn)
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was first created.
+
+    Idempotent: checks the live table shape rather than tracking a version, so
+    running it on a fresh database (where _SCHEMA already created everything)
+    is a no-op.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+    for column, column_type in _ADDED_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {column_type}")
 
 
 @contextmanager

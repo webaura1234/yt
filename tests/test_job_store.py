@@ -60,3 +60,86 @@ def test_list_jobs_orders_most_recent_first():
 def test_update_job_with_no_fields_returns_current_state():
     job = store.create_job("Ancient Egypt")
     assert store.update_job(job["id"]) == store.get_job(job["id"])
+
+
+def test_update_job_persists_the_storyboard_across_stages():
+    # The dashboard analyses the script in one request and renders in another,
+    # so the shot plan has to survive a round trip through SQLite.
+    job = store.create_job("Space, Planets and Stars")
+    storyboard = [
+        {
+            "index": 0,
+            "sentence": "చంద్రుడు ఆకారం మారుస్తాడు.",
+            "subject": "moon",
+            "action": "changing phase",
+            "location": "night sky",
+            "time_of_day": "night",
+            "emotion": "wonder",
+            "objects": ["crescent"],
+            "shot_style": "time lapse",
+            "queries": ["real moon phases time lapse", "crescent moon night sky"],
+            "allow_generic": [],
+        }
+    ]
+
+    updated = store.update_job(job["id"], storyboard=storyboard)
+    refetched = store.get_job(job["id"])
+
+    assert updated["storyboard"] == storyboard
+    assert refetched["storyboard"] == storyboard
+
+
+def test_a_job_without_a_storyboard_reads_back_as_none():
+    job = store.create_job("Fun Mathematics and Number Tricks")
+
+    assert job["storyboard"] is None
+
+
+def test_migration_adds_the_storyboard_column_to_an_existing_database(tmp_path, monkeypatch):
+    """A jobs.db created before storyboards must gain the column, not break.
+
+    CREATE TABLE IF NOT EXISTS silently does nothing when the table already
+    exists, so without an explicit migration an older database would keep the
+    old shape and every write touching the new column would fail.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    monkeypatch.setattr(db_module, "DB_PATH", db_path)
+
+    # Build the pre-migration table by hand, exactly as the old schema had it.
+    legacy = sqlite3.connect(db_path)
+    legacy.executescript(
+        """
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, topic TEXT NOT NULL, stage TEXT NOT NULL,
+            title TEXT, script TEXT, description TEXT, search_terms_json TEXT,
+            voice TEXT, video_path TEXT, youtube_video_id TEXT, error TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        INSERT INTO jobs (id, topic, stage, created_at, updated_at)
+        VALUES ('old-job', 'Old Topic', 'script_ready', '2026-01-01', '2026-01-01');
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    db_module.init_db()
+
+    # The old row still reads, and the new column is now writable.
+    old = store.get_job("old-job")
+    assert old["topic"] == "Old Topic"
+    assert old["storyboard"] is None
+
+    store.update_job("old-job", storyboard=[{"index": 0, "sentence": "hi"}])
+    assert store.get_job("old-job")["storyboard"] == [{"index": 0, "sentence": "hi"}]
+
+
+def test_init_db_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "twice.db")
+
+    db_module.init_db()
+    db_module.init_db()
+
+    job = store.create_job("Nature, Plants and the Weather")
+    assert store.get_job(job["id"]) is not None

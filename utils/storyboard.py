@@ -77,6 +77,52 @@ class SceneBrief:
         parts = [p for p in (self.subject, self.action, self.location) if p]
         return ", ".join(parts) or self.sentence
 
+    def to_dict(self) -> dict:
+        """Plain-JSON form, for persisting a storyboard between pipeline stages.
+
+        The dashboard analyses the script in one request and renders in another,
+        so the brief has to survive a round trip through SQLite. Only the brief
+        travels - the chosen clips are found and used inside the render stage,
+        so nothing about a SceneSelection needs to be serialisable.
+        """
+        return {
+            "index": self.index,
+            "sentence": self.sentence,
+            "subject": self.subject,
+            "action": self.action,
+            "location": self.location,
+            "time_of_day": self.time_of_day,
+            "emotion": self.emotion,
+            "objects": list(self.objects),
+            "shot_style": self.shot_style,
+            "queries": list(self.queries),
+            "allow_generic": list(self.allow_generic),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "SceneBrief":
+        """Rebuild a brief from `to_dict` output, tolerating missing keys.
+
+        Lenient on purpose: a job stored before a field existed should still
+        render rather than raise, so every field falls back to its default.
+        """
+        brief = cls(
+            index=int(payload.get("index", 0)),
+            sentence=str(payload.get("sentence", "")),
+            subject=str(payload.get("subject", "")),
+            action=str(payload.get("action", "")),
+            location=str(payload.get("location", "")),
+            time_of_day=str(payload.get("time_of_day", "")),
+            emotion=str(payload.get("emotion", "")),
+            objects=[str(o) for o in payload.get("objects", []) or []],
+            shot_style=_normalise_shot_style(str(payload.get("shot_style", ""))),
+            allow_generic=[str(a) for a in payload.get("allow_generic", []) or []],
+        )
+        brief.queries = [str(q) for q in payload.get("queries", []) or [] if str(q).strip()]
+        if not brief.queries:
+            brief.queries = _decorate_queries(_fallback_queries(brief), brief)
+        return brief
+
 
 def _normalise_shot_style(value: str) -> str:
     """Map free text onto SHOT_STYLES, so downstream code can trust the value."""

@@ -27,6 +27,8 @@ def _now() -> str:
 def _row_to_dict(row) -> dict[str, Any]:
     data = dict(row)
     data["search_terms"] = json.loads(data.pop("search_terms_json") or "null")
+    # storyboard_json is absent on rows read from a pre-migration database.
+    data["storyboard"] = json.loads(data.pop("storyboard_json", None) or "null")
     return data
 
 
@@ -61,6 +63,9 @@ def update_job(job_id: str, **fields: Any) -> dict[str, Any]:
 
     if "search_terms" in fields:
         fields["search_terms_json"] = json.dumps(fields.pop("search_terms"))
+
+    if "storyboard" in fields:
+        fields["storyboard_json"] = json.dumps(fields.pop("storyboard"))
 
     if "stage" in fields and isinstance(fields["stage"], JobStage):
         fields["stage"] = fields["stage"].value
